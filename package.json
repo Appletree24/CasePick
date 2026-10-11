@@ -1,0 +1,26 @@
+{
+  "name": "casepick",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.22.0",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "dev:pi": "pi --extension ./src/extension.ts"
+  },
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["./src/extension.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.1.0",
+    "typescript": "5.9.3",
+    "@types/node": "22.19.0"
+  }
+}
