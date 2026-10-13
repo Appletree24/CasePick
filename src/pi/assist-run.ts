@@ -8,6 +8,7 @@ import {
 } from "../core/assist.ts";
 import { loadConfig, type Config } from "../store/config.ts";
 import { callModel, confirmSend, prepareRequests, resolveDraftModel, type DraftModel } from "./model.ts";
+import { loadPluginSettings } from "./plugin-settings.ts";
 import { showText } from "./ui.ts";
 
 interface Prepared {
@@ -17,7 +18,9 @@ interface Prepared {
 
 async function prepare(ctx: ExtensionCommandContext): Promise<Prepared | undefined> {
     const config = await loadConfig();
-    const resolved = resolveDraftModel(ctx, config);
+    const plugin = await loadPluginSettings(ctx.cwd, "models" in ctx);
+    for (const warning of plugin.warnings) ctx.ui.notify(warning, "warning");
+    const resolved = resolveDraftModel(ctx, config, plugin.overrides);
     if (!resolved.ok) {
         ctx.ui.notify(resolved.reason, "warning");
         return undefined;
@@ -41,7 +44,7 @@ async function run<T>(ctx: ExtensionCommandContext, purpose: string, prompts: Pr
             ctx.ui.setStatus("casepick", `CasePick：${purpose}，${prepared.draft.label}，第 ${index + 1} / ${requests.length} 个请求…`);
             let reply;
             try {
-                reply = await callModel(ctx, prepared.config, prepared.draft, request.prompt);
+                reply = await callModel(ctx, prepared.draft, request.prompt);
             } catch (error) {
                 ctx.ui.notify(`第 ${index + 1} 个请求失败，剩余 ${requests.length - index - 1} 个不再发送：${error instanceof Error ? error.message : String(error)}`, "error");
                 break;

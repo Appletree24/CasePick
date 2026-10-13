@@ -287,7 +287,7 @@ Pi 会话文件
 | `drafting.max_output_tokens` | 单次请求的输出上限 | 8000 |
 | `drafting.timeout_s` | 单次请求超时 | 120 |
 
-- **OMP 的模型角色**：OMP 支持自定义模型角色。在 `~/.omp/agent/config.yml` 的 `modelTags` 里声明 `casepick` 角色后，可以在 `/model` 面板里给它可视化地指派模型。`follow_current` 模式下，CasePick 先用 `ctx.models.resolve("@casepick")` 找这个角色，找到就用它，找不到才跟随当前会话的模型；思考等级仍按 `drafting.reasoning`。Pi 没有模型角色，不受影响。OMP 18.10.3 的 settings 里没有给普通扩展的配置分区，Plugins 分区只给通过插件管理器安装的 npm 插件用，而且选项只能写死，不能列出可用模型，所以不用它。
+- **OMP 的模型角色**：OMP 支持自定义模型角色。在 `~/.omp/agent/config.yml` 的 `modelTags` 里声明 `casepick` 角色后，可以在 `/model` 面板里给它可视化地指派模型。`follow_current` 模式下，CasePick 先用 `ctx.models.resolve("@casepick")` 找这个角色，找到就用它，找不到才跟随当前会话的模型；思考等级仍按 `drafting.reasoning`。Pi 没有模型角色，不受影响。- **OMP 设置 → Plugins 分区**：`package.json` 的 `omp.settings` 声明了 `draftModel`（文本：留空、`current`、`off`、`@角色` 或 `provider/id`）、`reasoning`（固定选项，默认 low）、`maxOutputTokens`、`timeoutSeconds`。用 `omp plugin link <CasePick 目录>` 装成插件后，这一项会出现在 Plugins 分区。运行时通过 OMP 的 `getPluginSettings` 读取；**填了值的项覆盖 `/casepick config` 的对应项**，留空的沿用 `/casepick config`。`/casepick config` 会列出哪些项被覆盖。Plugins 分区的选项只能写死，不能列出可用模型，所以 `draftModel` 是文本框；要下拉选模型，用上面的 `@casepick` 角色。
 - **默认值的含义**：当前会话用的是 Astra，起草就用 Astra，思考等级 low。"跟随"在每次发起起草时取当前模型，不在配置里写死；用户中途切换了会话模型，下一次起草跟着变。
 - **思考等级的处理**：模型不支持思考时不传这个参数，界面显示"该模型不支持思考等级"；模型不支持所选等级时，取它支持的最接近的较低等级，没有较低的就取最接近的较高等级，并在界面上显示实际使用的等级。
 - **凭据**：发请求时用 `ctx.modelRegistry.getApiKeyAndHeaders(model)` 取凭据，不落盘；`hasConfiguredAuth(model)` 为假时不发送，提示用户先在宿主里配置。

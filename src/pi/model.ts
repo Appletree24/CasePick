@@ -9,6 +9,7 @@ import { resolveReasoning, type ReasoningLevel } from "../core/reasoning.ts";
 import { redact, type RedactionHit } from "../core/redact.ts";
 import { appendLine, dataDir } from "../store/cases.ts";
 import { saveConfig, type Config } from "../store/config.ts";
+import type { PluginOverrides } from "./plugin-settings.ts";
 import { showText } from "./ui.ts";
 
 export interface DraftModel {
@@ -17,6 +18,8 @@ export interface DraftModel {
     label: string;                     // 显示给用户，如 "Astra · low"
     reasoning: ReasoningLevel | undefined;
     note?: string;
+    maxOutputTokens: number;
+    timeoutSeconds: number;
 }
 
 export function modelKey(model: { provider: string; id: string }): string {
@@ -32,22 +35,50 @@ export type ResolveResult = { ok: true; value: DraftModel } | { ok: false; reaso
 // OMP 的模型角色：用户在 /model 面板里给 casepick 角色指派模型。Pi 没有 ctx.models，返回 undefined。
 export const modelRole = "casepick";
 
-export function roleModel(ctx: ExtensionCommandContext): Model<Api> | undefined {
+function hostResolve(ctx: ExtensionCommandContext, spec: string): Model<Api> | undefined {
     const models = (ctx as { models?: { resolve(spec: string): Model<Api> | undefined } }).models;
     try {
-        return models?.resolve(`@${modelRole}`);
+        return models?.resolve(spec);
     } catch {
         return undefined;
     }
 }
 
+export function roleModel(ctx: ExtensionCommandContext): Model<Api> | undefined {
+    return hostResolve(ctx, `@${modelRole}`);
+}
+
+// OMP 插件设置里的 draftModel：current、off、@角色、provider/id，或宿主能识别的模型名。
+function modelFromSpec(ctx: ExtensionCommandContext, spec: string): Model<Api> | undefined {
+    const resolved = hostResolve(ctx, spec);
+    if (resolved) return resolved;
+    const slash = spec.indexOf("/");
+    if (slash <= 0) return undefined;
+    const provider = spec.slice(0, slash);
+    const id = spec.slice(slash + 1);
+    return ctx.modelRegistry.getAvailable().find((item) => item.provider === provider && item.id === id) ?? ctx.modelRegistry.find(provider, id);
+}
+
 // 每次起草时解析：跟随当前模型时取发起这一刻的会话模型，不在配置里写死。
-export function resolveDraftModel(ctx: ExtensionCommandContext, config: Config): ResolveResult {
+// overrides 来自 OMP 插件设置，填了值的项优先。
+export function resolveDraftModel(ctx: ExtensionCommandContext, config: Config, overrides: PluginOverrides = {}): ResolveResult {
     const choice = config.drafting.model;
-    if (choice.mode === "off") return { ok: false, reason: "配置为不使用起草模型；可以在 /casepick config 里修改" };
+    const spec = overrides.model;
     let model: Model<Api> | undefined;
     let origin = "";
-    if (choice.mode === "follow_current") {
+    if (spec !== undefined && spec.toLowerCase() === "off") {
+        return { ok: false, reason: "OMP 插件设置里 draftModel 为 off，不使用起草模型" };
+    } else if (spec !== undefined && spec.toLowerCase() === "current") {
+        model = ctx.model as Model<Api> | undefined;
+        origin = "OMP 插件设置：当前模型";
+        if (!model) return { ok: false, reason: "当前会话没有选定模型" };
+    } else if (spec !== undefined) {
+        model = modelFromSpec(ctx, spec);
+        origin = `OMP 插件设置：${spec}`;
+        if (!model) return { ok: false, reason: `找不到 OMP 插件设置里的起草模型 ${spec}；可以填 provider/id、@角色、current 或 off` };
+    } else if (choice.mode === "off") {
+        return { ok: false, reason: "配置为不使用起草模型；可以在 /casepick config 里修改" };
+    } else if (choice.mode === "follow_current") {
         // 默认：OMP 里给 casepick 角色指派了模型就用它，否则跟随当前会话的模型。
         model = roleModel(ctx);
         if (model) origin = `OMP 角色 @${modelRole}`;
@@ -59,11 +90,13 @@ export function resolveDraftModel(ctx: ExtensionCommandContext, config: Config):
         if (!model) return { ok: false, reason: `找不到配置的起草模型 ${choice.provider}/${choice.id}；请在 /casepick config 里重新选择` };
     }
     if (!ctx.modelRegistry.hasConfiguredAuth(model)) return { ok: false, reason: `${modelName(model)} 没有可用的凭据，请先在宿主里配置` };
-    const reasoning = resolveReasoning(model, config.drafting.reasoning);
+    const reasoning = resolveReasoning(model, overrides.reasoning ?? config.drafting.reasoning);
     return {
         ok: true,
         value: {
             model, key: modelKey(model), reasoning: reasoning.level, note: reasoning.note,
+            maxOutputTokens: overrides.maxOutputTokens ?? config.drafting.max_output_tokens,
+            timeoutSeconds: overrides.timeoutSeconds ?? config.drafting.timeout_s,
             label: `${modelName(model)} · ${reasoning.level ?? "不使用思考等级"}${origin ? `（${origin}）` : ""}`,
         },
     };
@@ -130,11 +163,11 @@ export interface ModelReply {
     usage?: { input: number; output: number };
 }
 
-export async function callModel(ctx: ExtensionCommandContext, config: Config, draft: DraftModel, prompt: Prompt, signal?: AbortSignal): Promise<ModelReply> {
+export async function callModel(ctx: ExtensionCommandContext, draft: DraftModel, prompt: Prompt, signal?: AbortSignal): Promise<ModelReply> {
     const context: Context = { systemPrompt: prompt.system, messages: [{ role: "user", content: prompt.user, timestamp: Date.now() }] };
-    const timeout = AbortSignal.timeout(config.drafting.timeout_s * 1000);
+    const timeout = AbortSignal.timeout(draft.timeoutSeconds * 1000);
     const options = {
-        maxTokens: config.drafting.max_output_tokens,
+        maxTokens: draft.maxOutputTokens,
         signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
         ...(draft.reasoning ? { reasoning: draft.reasoning } : {}),
     };

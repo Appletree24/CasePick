@@ -61,7 +61,7 @@ test("调用时带上思考等级和输出上限，不传工具，并记录用�
     const ctx = context({ calls });
     const resolved = resolveDraftModel(ctx, defaultConfig());
     assert.ok(resolved.ok);
-    const reply = await callModel(ctx, defaultConfig(), resolved.value, { system: "系统", user: "消息" });
+    const reply = await callModel(ctx, resolved.value, { system: "系统", user: "消息" });
     assert.equal(reply.text, "{\"ok\":true}");
     assert.equal(calls[0].opts.reasoning, "low");
     assert.equal(calls[0].opts.maxTokens, 8000);
@@ -100,4 +100,43 @@ test("编辑框以回车提交的方式打开", async () => {
     const ui = { editor: (...args: unknown[]) => { calls.push(args); return Promise.resolve("x"); } };
     assert.equal(await promptEditor(ui as never, "标题", "预填"), "x");
     assert.deepEqual(calls[0], ["标题", "预填", undefined, { promptStyle: true }]);
+});
+
+test("OMP 插件设置里填了值的项覆盖 /casepick config", async () => {
+    const { loadPluginSettings, parseOverrides } = await import("../src/pi/plugin-settings.ts");
+    const plugin = await loadPluginSettings("/work", true, async (name) => {
+        assert.equal(name, "casepick");
+        return { draftModel: "acme/plain", reasoning: "high", maxOutputTokens: 4000, timeoutSeconds: "" };
+    });
+    assert.deepEqual(plugin.overrides, { model: "acme/plain", reasoning: "high", maxOutputTokens: 4000 });
+    const resolved = resolveDraftModel(context(), defaultConfig(), plugin.overrides);
+    assert.ok(resolved.ok);
+    assert.equal(resolved.value.key, "acme/plain");
+    // 不支持思考的模型不传思考等级，即使插件设置填了 high。
+    assert.equal(resolved.value.reasoning, undefined);
+    assert.equal(resolved.value.maxOutputTokens, 4000);
+    assert.equal(resolved.value.timeoutSeconds, 120);
+    assert.match(resolved.value.label, /OMP 插件设置/);
+
+    const high = resolveDraftModel(context(), defaultConfig(), { reasoning: "high" });
+    assert.ok(high.ok && high.value.reasoning === "high" && high.value.key === "acme/astra");
+    assert.equal(resolveDraftModel(context(), defaultConfig(), { model: "off" }).ok, false);
+    assert.match((resolveDraftModel(context(), defaultConfig(), { model: "acme/gone" }) as { reason: string }).reason, /找不到 OMP 插件设置/);
+    const role = { ...context(), models: { resolve: (spec: string) => (spec === "@review" ? plain : undefined) } } as unknown as ExtensionCommandContext;
+    const byRole = resolveDraftModel(role, defaultConfig(), { model: "@review" });
+    assert.ok(byRole.ok && byRole.value.key === "acme/plain");
+
+    const invalid = parseOverrides({ reasoning: "ultra", maxOutputTokens: 5, draftModel: 3 });
+    assert.deepEqual(invalid.overrides, {});
+    assert.equal(invalid.warnings.length, 3);
+});
+
+test("Pi 上读不到插件设置时不提示，OMP 上读不到时提示", async () => {
+    const { loadPluginSettings } = await import("../src/pi/plugin-settings.ts");
+    const pi = await loadPluginSettings("/work", false);
+    assert.deepEqual(pi, { overrides: {}, warnings: [], available: false });
+    const omp = await loadPluginSettings("/work", true);
+    assert.equal(omp.warnings.length, 1);
+    const failing = await loadPluginSettings("/work", true, async () => { throw new Error("锁文件损坏"); });
+    assert.match(failing.warnings[0], /锁文件损坏/);
 });

@@ -5,6 +5,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { reasoningLevels, resolveReasoning, supportedLevels, type ReasoningLevel } from "../core/reasoning.ts";
 import { configPath, loadConfig, saveConfig, type Config } from "../store/config.ts";
 import { modelKey, modelRole, resolveDraftModel, roleModel } from "./model.ts";
+import { loadPluginSettings } from "./plugin-settings.ts";
 import { pick, showText } from "./ui.ts";
 
 const roleHelp = `OMP 支持自定义模型角色。声明一次 ${modelRole} 角色后，就能在 /model 面板里像给 @slow 指派模型一样给它选模型：
@@ -18,6 +19,8 @@ modelTags:
 2. 打开 /model，在角色列表里找到 CasePick，选一个模型。
 
 之后起草模型设为“跟随当前模型”（默认）时，CasePick 优先使用这个角色的模型；没有指派时才跟随当前会话的模型。
+
+另一种方式：把 CasePick 装成 OMP 插件（omp plugin link <CasePick 目录>），然后在 OMP 设置 → Plugins → casepick 里填 draftModel、reasoning 等。那里填了值的项会覆盖这里的配置；draftModel 是文本框，可以填 @casepick、provider/id、current 或 off。
 思考等级仍在这里配置（默认 low），角色值里的思考后缀不会被读取。
 Pi 没有模型角色，这一项只在 OMP 里生效。`;
 
@@ -82,11 +85,16 @@ async function chooseReasoning(ctx: ExtensionCommandContext, config: Config): Pr
 export async function configure(ctx: ExtensionCommandContext): Promise<void> {
     const config = await loadConfig();
     while (true) {
+        // 每轮重新读取，用户可能刚在 OMP 设置的 Plugins 分区里改过。
+        const plugin = await loadPluginSettings(ctx.cwd, "models" in ctx);
+        const overridden = Object.entries(plugin.overrides).map(([key, value]) => `${key}=${value}`);
+        const pluginNote = overridden.length ? `\nOMP 设置 → Plugins → casepick 覆盖了：${overridden.join("，")}（这些项以 Plugins 分区为准）`
+            : plugin.warnings.length ? `\n${plugin.warnings.join("\n")}` : "";
         const model = targetModel(ctx, config);
         const reasoning = model ? resolveReasoning(model, config.drafting.reasoning) : { level: config.drafting.reasoning };
-        const resolved = resolveDraftModel(ctx, config);
+        const resolved = resolveDraftModel(ctx, config, plugin.overrides);
         const status = resolved.ok ? `起草时实际使用：${resolved.value.label}${resolved.value.note ? `（${resolved.value.note}）` : ""}` : resolved.reason;
-        const choice = await ctx.ui.select(`CasePick 配置\n${status}\n配置文件：${configPath()}`, [
+        const choice = await ctx.ui.select(`CasePick 配置\n${status}${pluginNote}\n配置文件：${configPath()}`, [
             `起草模型      ${describeModel(ctx, config)}`,
             `思考等级      ${config.drafting.reasoning}${reasoning.level !== config.drafting.reasoning && config.drafting.reasoning !== "off" ? `（实际 ${reasoning.level ?? "不传"}）` : ""}`,
             `已同意外发的模型 ${config.drafting.consented.length} 个（选择以清空）`,
