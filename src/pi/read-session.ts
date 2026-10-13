@@ -1,6 +1,6 @@
 import { setImmediate } from "node:timers/promises";
 import {
-    buildSessionProjection,
+    buildSessionContext,
     convertToLlm,
     VERSION,
     type ExtensionAPI,
@@ -8,9 +8,16 @@ import {
     type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import type { Task } from "../schema/case.ts";
-import { convertMessage } from "../core/convert.ts";
+import { convertMessage, type RecordedMessage } from "../core/convert.ts";
 import { digestOf } from "../core/digest.ts";
 import type { CaseContext, RecordedEntry } from "../core/messages.ts";
+
+// OMP 的兼容加载器将 Pi 包引用绑定到宿主实现；developer 是 OMP 额外的指令角色。
+type HostMessage = (RecordedMessage & { stopReason?: string; isError?: boolean }) |
+    (({ role: "system" } | { role: "developer" }) & {
+        content: string | { type: "text"; text: string }[];
+        sections?: Record<string, string | null>;
+    });
 
 export interface SessionSnapshot {
     sessionKey: string;
@@ -36,8 +43,9 @@ export async function readSession(ctx: ExtensionCommandContext, pi: ExtensionAPI
             throw new Error("当前分支超过 2000 条消息或 20 MB 的读取上限，已停止读取；本次不会用不完整历史生成案例。");
         }
         if (entry.type === "message") {
-            for (const message of convertToLlm([entry.message])) {
-                if (message.role === "system") continue;
+            const converted: HostMessage[] = convertToLlm([entry.message]);
+            for (const message of converted) {
+                if (message.role === "system" || message.role === "developer") continue;
                 messages.push({
                     id: entry.id, message: convertMessage(message, "scan").message,
                     ...(message.role === "assistant" ? { interrupted: message.stopReason === "aborted" || message.stopReason === "error" } : {}),
@@ -51,10 +59,15 @@ export async function readSession(ctx: ExtensionCommandContext, pi: ExtensionAPI
         throw new Error("读取期间会话发生了变化，请重新运行 /casepick。");
     }
     const active = new Set(pi.getActiveTools());
-    const definitions = pi.getAllTools().filter((tool) => active.has(tool.name)).map((tool) => ({
-        type: "function" as const,
-        function: { name: tool.name, description: tool.description, parameters: JSON.parse(JSON.stringify(tool.parameters)) as Record<string, unknown> },
-    }));
+    const definitions = pi.getAllTools().filter((tool) => active.has(tool.name)).map((tool) => {
+        // Pi 使用普通 TypeBox 对象；OMP omptype schema 是可调用对象，必须先导出 JSON Schema。
+        const schema = tool.parameters as { toJsonSchema?: () => Record<string, unknown> };
+        const parameters = typeof schema.toJsonSchema === "function" ? schema.toJsonSchema() : schema;
+        return {
+            type: "function" as const,
+            function: { name: tool.name, description: tool.description, parameters: JSON.parse(JSON.stringify(parameters)) as Record<string, unknown> },
+        };
+    });
     return {
         sessionKey,
         branch: structuredClone(branch), messages,
@@ -68,37 +81,50 @@ export function contextAt(snapshot: SessionSnapshot, cutoffEntry: string): CaseC
     if (!cutoff || cutoff.type !== "message" || cutoff.message.role !== "assistant") {
         throw new Error("请选择当前分支中的一条 assistant 回复作为出错消息");
     }
-    // 从父节点构建当时的上下文，后来的压缩和 context_edit 都不能回溯影响这道题。
-    const projection = buildSessionProjection(snapshot.branch, cutoff.parentId);
+    // 两个宿主都提供此接口；压缩、Pi context_edit 和 OMP reset 由当前宿主解释。
+    // 只重建父节点，不能用当前叶子的上下文，否则后续纠正会泄漏进题目。
+    const context = buildSessionContext(snapshot.branch, cutoff.parentId);
     const input: RecordedEntry[] = [];
     const transforms: CaseContext["transforms"] = [];
     const limitations: CaseContext["limitations"] = [
         { field: "task.tools", status: "approximate", note: "工具定义取自扫描时的当前配置，可能与截止点时不同" },
         { field: "task.messages", status: "approximate", note: "依据已保存的会话上下文重建，未捕获其他扩展或供应商在发请求时的临时改写" },
     ];
-    const systemText: string[] = [];
+    // OMP 的 session_init 记录基础提示，不保证包含逐轮 hook 的临时覆盖。
+    // 只读截止点之前最新的一份；没有记录时不能拿现在的系统提示代替。
+    let recordedBase: string | undefined;
+    for (const entry of snapshot.branch) {
+        if (entry.id === cutoffEntry) break;
+        const init = entry as { type: string; systemPrompt?: string | string[] };
+        if (init.type === "session_init") {
+            recordedBase = Array.isArray(init.systemPrompt) ? init.systemPrompt.join("\n\n") : init.systemPrompt;
+        }
+    }
+    const systemText: string[] = recordedBase === undefined ? [] : [recordedBase];
     const sections = new Map<string, string>();
-    let systemCount = 0;
+    let systemCount = recordedBase === undefined ? 0 : 1;
+    let developerCount = 0;
     let lateSystem = false;
-    for (const projected of projection.entries) {
-        const converted = convertToLlm(projected.messages);
-        for (let index = 0; index < converted.length; index++) {
-            const message = converted[index];
+    const converted: HostMessage[] = convertToLlm(context.messages);
+    for (const [index, message] of converted.entries()) {
+        if (message.role === "system" || message.role === "developer") {
+            systemCount++;
+            if (message.role === "developer") developerCount++;
+            lateSystem ||= input.length > 0;
+            const content = typeof message.content === "string" ? message.content : message.content.map((block) => block.text).join("\n");
+            if (content) systemText.push(content);
             if (message.role === "system") {
-                systemCount++;
-                lateSystem ||= input.length > 0;
-                const content = typeof message.content === "string" ? message.content : message.content.map((block) => block.text).join("\n");
-                if (content) systemText.push(content);
                 for (const [name, text] of Object.entries(message.sections ?? {})) {
                     if (text === null) sections.delete(name);
                     else sections.set(name, text);
                 }
-                continue;
             }
-            const result = convertMessage(message, `task.messages[${input.length}]`);
-            input.push({ id: `${projected.sourceEntry.id}:${index}`, message: result.message });
-            transforms.push(...result.transforms);
+            continue;
         }
+        const result = convertMessage(message, `task.messages[${input.length}]`);
+        // 重建消息可能来自压缩摘要，没有一一对应的 entry；这里是快照内 ID，不冒充原 entry。
+        input.push({ id: `context:${cutoffEntry}:${index}`, message: result.message });
+        transforms.push(...result.transforms);
     }
     const output = convertMessage(cutoff.message, "diagnostic.observed");
     if (output.message.role !== "assistant") throw new Error("出错消息不是 assistant 回复");
@@ -112,24 +138,25 @@ export function contextAt(snapshot: SessionSnapshot, cutoffEntry: string): CaseC
         followup.push(structuredClone(entry.message));
         const raw = snapshot.branch.find((candidate) => candidate.id === entry.id);
         if (raw?.type === "message") {
-            for (const message of convertToLlm([raw.message])) {
-                if (message.role !== "system") transforms.push(...convertMessage(message, `diagnostic.followup[${followup.length - 1}]`).transforms);
+            const converted: HostMessage[] = convertToLlm([raw.message]);
+            for (const message of converted) {
+                if (message.role !== "system" && message.role !== "developer") transforms.push(...convertMessage(message, `diagnostic.followup[${followup.length - 1}]`).transforms);
             }
         }
     }
-    const approximateSystem = systemCount > 1 || lateSystem;
+    const approximateSystem = recordedBase !== undefined || developerCount > 0 || systemCount > 1 || lateSystem;
     const system: Task["system"] = systemCount === 0 ? { status: "missing", content: null }
         : { status: approximateSystem ? "approximate" : "captured", content: [...systemText, ...sections.values()].filter(Boolean).join("\n\n") };
     if (system.status !== "captured") limitations.push({
         field: "task.system", status: system.status,
         note: system.status === "missing" ? "会话没有保存截止点时的系统提示，未使用现在的提示代替"
-            : "会话中途更新过系统提示，已合并为截止点时的提示内容；单个 system 字段无法保留更新的时间位置",
+            : "已合并记录的基础提示和指令消息；无法保证逐轮 hook 覆盖、developer 层级或提示更新时间位置与原请求完全一致",
     });
     if (transforms.some((transform) => transform.type === "omit_image")) limitations.push({
         field: "task.messages", status: "unrecoverable", note: "图片以省略标记替代；本案例不能用于判定依赖图片内容的要求",
     });
     if (input.some((entry) => entry.message.role === "assistant" && entry.message.tool_calls?.length) || output.message.tool_calls?.length) {
-        limitations.push({ field: "tool_calls.arguments", status: "approximate", note: "Pi 保存的是已解析的参数对象，导出为 JSON 字符串；原始 JSON 的空白与键编码不可恢复" });
+        limitations.push({ field: "tool_calls.arguments", status: "approximate", note: "宿主保存的是已解析的参数对象，导出为 JSON 字符串；原始 JSON 的空白与键编码不可恢复" });
     }
     return {
         sessionKey: snapshot.sessionKey, cutoffEntry, hostVersion: VERSION, input,

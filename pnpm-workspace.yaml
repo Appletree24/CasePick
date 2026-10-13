@@ -2,3 +2,5 @@ allowBuilds:
   '@google/genai': false
   esbuild: false
   protobufjs: false
+minimumReleaseAgeExclude:
+  - '@oh-my-pi/omptype@18.10.3'

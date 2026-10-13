@@ -3,7 +3,8 @@
 // 凡是这里接受的文档，Detroit 的 JSON Schema 也必须接受，测试会核对这一点。
 // 摘要一致、引文出处等跨字段检查不在这里，见 core/lint.ts。
 
-import { type Static, type TSchema, Type } from "@sinclair/typebox";
+// 固定使用本地 TypeBox 子路径，与 Value 配套；OMP 会将裸包入口替换为 omptype。
+import { type Static, type TSchema, Type } from "@sinclair/typebox/type";
 import { Value } from "@sinclair/typebox/value";
 
 const closed = { additionalProperties: false } as const;

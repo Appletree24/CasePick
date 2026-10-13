@@ -2,10 +2,11 @@
 
 > 版本 2026-10-12（第二版）。案例格式改为直接采用 Detroit 评测集格式 `detroit.case/v2`；此前当天的版本加入了评审标准（rubric）。更早的版本见 git 历史。
 > `casepick-plan.md` 中的自动采集和 Harness 内评测已经放弃，以本文为准。
+> 2026-10-13 实现补充：同一入口支持 Pi 和 OMP。会话重建统一调用宿主的 `buildSessionContext`，截止点为原出错回复的父节点；不依赖 Pi 独有的 `buildSessionProjection`。OMP callable 工具 schema 通过 `toJsonSchema()` 导出；案例自身的 schema 构造和校验固定使用本地 TypeBox 子路径，避免宿主兼容层替换裸包入口后混用两套 schema。OMP 基础提示与 developer 指令合并为 approximate 的 `task.system`，不改变 Detroit v2 的消息角色集合。
 
 ## 1. 一句话
 
-CasePick 是一个 Pi 插件：**把你在日常使用中遇到的 Agent 犯错，整理成可以直接拿去评测的高质量案例文件。**
+CasePick 是一个 Pi / OMP 插件：**把你在日常使用中遇到的 Agent 犯错，整理成可以直接拿去评测的高质量案例文件。**
 
 它只负责"生产数据"。拿这些案例去跑模型、打分、做对比，是下游评测平台 [Detroit](https://github.com/Appletree24/Detroit) 的事，插件不做。案例格式以 Detroit 定义的评测集格式协议为准（Detroit `docs/10-dataset-format.md`），CasePick 直接产出这种格式。
 
@@ -27,10 +28,10 @@ CasePick 要做的，就是把这件事的成本降到"扫一下、看一眼、�
 
 **做：**
 
-- 从 Pi 的会话历史里找出疑似犯错的地方（候选）。
+- 从 Pi / OMP 的会话历史里找出疑似犯错的地方（候选）。
 - 把候选整理成结构化案例：模型当时看到的输入、它该做到什么、它实际做了什么、依据是什么。
 - 为每条要求写评审标准（rubric），让下游的 LLM 评审（LLM-as-judge）或人工评审能稳定地判定；能程序化检查的要求额外附上约束。
-- 用本地检查保证案例质量，让用户在 Pi 里集中审阅和确认。
+- 用本地检查保证案例质量，让用户在 Pi / OMP 里集中审阅和确认。
 - 本地保存，导出成 Detroit 评测集格式（`detroit.case/v2` 的 JSONL）。
 
 **不做：**

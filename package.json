@@ -10,7 +10,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "node --test test/*.test.ts",
-    "dev:pi": "pi --extension ./src/extension.ts"
+    "dev:pi": "pi --extension ./src/extension.ts",
+    "dev:omp": "omp --extension ./src/extension.ts"
   },
   "keywords": [
     "pi-package"
@@ -20,11 +21,17 @@
       "./src/extension.ts"
     ]
   },
+  "omp": {
+    "extensions": [
+      "./src/extension.ts"
+    ]
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=1.1.0"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "1.1.0",
+    "@oh-my-pi/omptype": "18.10.3",
     "@types/node": "22.19.0",
     "ajv": "8.17.1",
     "ajv-formats": "3.0.1",

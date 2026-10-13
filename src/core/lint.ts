@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { Type } from "@sinclair/typebox";
+import { Type } from "@sinclair/typebox/type";
 import {
     CaseDocument as CaseSchema,
     schemaErrors,

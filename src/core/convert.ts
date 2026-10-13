@@ -2,7 +2,7 @@ import type { Message, Provenance, ToolCall } from "../schema/case.ts";
 
 type TextBlock = { type: "text"; text: string };
 type ImageBlock = { type: "image" };
-type ThinkingBlock = { type: "thinking" };
+type ThinkingBlock = { type: "thinking" | "redactedThinking" };
 type ToolBlock = { type: "toolCall"; id: string; name: string; arguments: unknown };
 
 // 结构类型由宿主适配层传入，core 不依赖 Pi。
@@ -29,6 +29,7 @@ export function convertMessage(recorded: RecordedMessage, target: string): {
                 transforms.push({ type: "omit_image", target, detail: "图片替换为文字标记，依赖图片的要求无法据此判定" });
                 break;
             case "thinking":
+            case "redactedThinking":
                 transforms.push({ type: "drop_thinking", target, detail: "不保留思考内容或签名" });
                 break;
             case "toolCall": {

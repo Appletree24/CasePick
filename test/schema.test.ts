@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { describe, test } from "node:test";
 import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
-import type { TSchema } from "@sinclair/typebox";
+import type { TSchema } from "@sinclair/typebox/type";
 import {
   CaseDocument,
   DatasetDocument,

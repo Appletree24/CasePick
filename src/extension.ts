@@ -48,7 +48,7 @@ export default function casepick(pi: ExtensionAPI): void {
         async handler(args, ctx) {
             if (!ctx.hasUI) {
                 throw new Error(
-                    "CasePick 需要交互 UI；请在 Pi 交互模式中运行 /casepick。",
+                    "CasePick 需要交互 UI；请在 Pi 或 OMP 交互模式中运行 /casepick。",
                 );
             }
 
