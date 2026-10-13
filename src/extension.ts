@@ -1,4 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { readFileSync } from "node:fs";
+import { generateCases } from "./pi/generate.ts";
 import {
     type Action,
     completeSubcommand,
@@ -19,15 +21,27 @@ function notImplemented(label: string): Handler {
     };
 }
 
-const handlers: Record<Action, Handler> = {
-    scan: notImplemented("扫描"),
-    mark: notImplemented("书签"),
-    cases: notImplemented("案例管理"),
-    export: notImplemented("导出"),
-    config: notImplemented("配置"),
-};
-
 export default function casepick(pi: ExtensionAPI): void {
+    const version: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
+    let generating = false;
+    const handlers: Record<Action, Handler> = {
+        scan: async (_args, ctx) => {
+            if (generating) {
+                ctx.ui.notify("已有一个案例审阅窗口，请先完成或退出。", "warning");
+                return;
+            }
+            generating = true;
+            try {
+                await generateCases(pi, ctx, version);
+            } finally {
+                generating = false;
+            }
+        },
+        mark: notImplemented("书签"),
+        cases: notImplemented("案例管理"),
+        export: notImplemented("导出"),
+        config: notImplemented("配置"),
+    };
     pi.registerCommand("casepick", {
         description: "把 Agent 的犯错整理成评测案例",
         getArgumentCompletions: completeSubcommand,
@@ -50,7 +64,11 @@ export default function casepick(pi: ExtensionAPI): void {
                     );
                     return;
                 case "run":
-                    await handlers[parsed.action](parsed.args, ctx);
+                    try {
+                        await handlers[parsed.action](parsed.args, ctx);
+                    } catch (error) {
+                        ctx.ui.notify(`CasePick 未完成：${error instanceof Error ? error.message : String(error)}`, "error");
+                    }
                     return;
             }
         },

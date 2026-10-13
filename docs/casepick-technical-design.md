@@ -1,13 +1,13 @@
 # CasePick 技术设计
 
-> 版本 2026-10-12。在 2026-10-11 版基础上加入评审标准（rubric），替代 2026-10-10 版（见 git 历史）。
+> 版本 2026-10-12（第二版）。案例格式改为直接采用 Detroit 评测集格式 `detroit.case/v2`；此前当天的版本加入了评审标准（rubric）。更早的版本见 git 历史。
 > `casepick-plan.md` 中的自动采集和 Harness 内评测已经放弃，以本文为准。
 
 ## 1. 一句话
 
 CasePick 是一个 Pi 插件：**把你在日常使用中遇到的 Agent 犯错，整理成可以直接拿去评测的高质量案例文件。**
 
-它只负责"生产数据"。拿这些案例去跑模型、打分、做对比，是下游评测平台的事，插件不做。
+它只负责"生产数据"。拿这些案例去跑模型、打分、做对比，是下游评测平台 [Detroit](https://github.com/Appletree24/Detroit) 的事，插件不做。案例格式以 Detroit 定义的评测集格式协议为准（Detroit `docs/10-dataset-format.md`），CasePick 直接产出这种格式。
 
 一条案例的核心是三样东西：模型当时看到的输入、它该做到的要求、以及**下游评审模型照着就能判对错的评审标准（rubric）**。
 
@@ -30,9 +30,8 @@ CasePick 要做的，就是把这件事的成本降到"扫一下、看一眼、�
 - 从 Pi 的会话历史里找出疑似犯错的地方（候选）。
 - 把候选整理成结构化案例：模型当时看到的输入、它该做到什么、它实际做了什么、依据是什么。
 - 为每条要求写评审标准（rubric），让下游的 LLM 评审（LLM-as-judge）或人工评审能稳定地判定；能程序化检查的要求额外附上约束。
-- 提供一份参考评审提示词模板随导出文件交付，下游可以直接用，也可以替换。
 - 用本地检查保证案例质量，让用户在 Pi 里集中审阅和确认。
-- 本地保存，导出成 JSONL。
+- 本地保存，导出成 Detroit 评测集格式（`detroit.case/v2` 的 JSONL）。
 
 **不做：**
 
@@ -52,7 +51,7 @@ CasePick 要做的，就是把这件事的成本降到"扫一下、看一眼、�
 | 原要求 | 截止点之前、用户或系统明确提出过、被出错消息违反的要求 |
 | 评审标准（rubric） | 每条原要求附带的判定说明：判定问题、通过和违反的标准、边界情况、例子。给下游评审模型或人看 |
 | 约束 | 可以由程序检查的期望，比如"必须是合法 JSON""不能调用 `write` 修改 `tests/` 下的文件"。可选，是 rubric 之外的补充 |
-| 评审方式 | `program`：至少一条约束能程序化判定；`rubric`：只能靠评审模型或人按 rubric 判定。两者都要有完整 rubric |
+| 评审方式 | `program`：至少一条约束能程序化判定；`rubric`：只能靠评审模型或人按 rubric 判定。两者都要有完整 rubric。只在界面上显示，不单独存字段，由要求里有没有约束推出 |
 
 ## 5. 用户怎么用
 
@@ -94,7 +93,7 @@ CasePick 要做的，就是把这件事的成本降到"扫一下、看一眼、�
 
 你看一眼没问题，按确认。不对就改，或者丢弃。
 
-**4）导出。** 攒够一批后 `/casepick export`，确认路径，得到一个 JSONL 文件和一份参考评审提示词，交给评测平台。
+**4）导出。** 攒够一批后 `/casepick export`，确认路径，得到一份 Detroit 评测集（`cases.jsonl` 加 `dataset.json`），直接导入 Detroit。
 
 整个过程中，插件不会往当前对话里插入任何内容，也不会打断你正常使用 Pi。
 
@@ -106,7 +105,7 @@ CasePick 要做的，就是把这件事的成本降到"扫一下、看一眼、�
 2. **输入里没有答案。** 出错消息、用户的纠正、后续修正都不进输入。这一点由截止点机制保证，并在确认前再检查一次。
 3. **期望有出处。** 每条原要求都要引用截止点之前某条消息的原文。用户后来才补充的要求，不能当成模型当时就该遵守的。
 4. **期望是一条条独立的要求**，不是一段笼统的"应该做得更好"。
-5. **每条要求都有能直接用的评审标准。** 不懂这次会话的评审模型，只看 `input`、被测输出和 rubric，就能给出稳定的判定。具体写法见第 7 节"评审标准"。
+5. **每条要求都有能直接用的评审标准。** 不懂这次会话的评审模型，只看 `task`、被测输出和 rubric，就能给出稳定的判定。具体写法见第 7 节"评审标准"。
 6. **rubric 能判出原来的错。** rubric 里至少有一个"违反"的例子取自原出错输出的原文，证明这份标准针对的就是这次犯错。
 7. **能检查的尽量再写成约束，并且约束要能抓到原来的错。** 把约束套在原出错输出上，结果必须是"违反"。否则说明约束写错了，或者这里其实没犯错。
 8. **能脱离本机独立使用。** 导出文件不依赖本机路径、原会话文件或 Pi 本身。
@@ -123,98 +122,50 @@ CasePick 要做的，就是把这件事的成本降到"扫一下、看一眼、�
 
 ## 7. 案例数据结构
 
-一条案例的完整样子（导出文件里每行一条）：
+CasePick 不再定义自己的交换格式，案例直接采用 Detroit 评测集格式协议的 `detroit.case/v2`（Detroit 仓库 `docs/10-dataset-format.md`，JSON Schema 在 `schemas/detroit-v2.schema.json`）。完整示例见 Detroit 的 `examples/datasets/v2/casepick-inline/`。本节只说明 CasePick 怎么填这个格式，以及 CasePick 自己比协议更严格的地方。
 
-```jsonc
-{
-  "schema": "casepick.case/v1",
-  "id": "c_01JB7Q9X2M",
-  "version": 1,
-  "title": "要求只输出 JSON，回答却带了说明文字",
-  "category": "instruction_violation",
-  "judge_mode": "program",              // program | rubric
+### 字段怎么填
 
-  // 被测输入：直接是 OpenAI Chat Completions 的 messages / tools 格式
-  "input": {
-    "messages": [
-      { "role": "user", "content": "..." },
-      { "role": "assistant", "content": null,
-        "tool_calls": [{ "id": "call_1", "type": "function",
-          "function": { "name": "read", "arguments": "{\"path\":\"data.csv\"}" } }] },
-      { "role": "tool", "tool_call_id": "call_1", "content": "..." },
-      { "role": "user", "content": "把结果整理成 JSON，只输出 JSON，别加解释。" }
-    ],
-    "tools": [ /* 工具定义，见 limitations */ ],
-    "system": null
-  },
-
-  // 期望：每条要求都有出处和评审标准，能程序检查的附带约束
-  "expected": {
-    "summary": "只输出一个合法的 JSON 值，不带任何其他文字。",
-    "requirements": [
-      {
-        "id": "r1",
-        "text": "只输出 JSON，不加解释",
-        "source": { "message": 3, "quote": "只输出 JSON，别加解释" },
-        "rubric": {
-          "question": "回答是否整体只是一个 JSON 值，JSON 之外没有任何文字？",
-          "pass": "去掉首尾空白后，整个回答能被解析为一个 JSON 值。",
-          "fail": "JSON 前后出现说明、寒暄、标题或 Markdown 代码块标记。",
-          "edge_cases": [
-            "首尾空白、换行不算违反。",
-            "JSON 字符串值内部的文字不算解释。"
-          ],
-          "examples": [
-            { "verdict": "fail", "origin": "observed",
-              "text": "好的，以下是整理结果：",
-              "note": "JSON 前有说明文字" },
-            { "verdict": "pass", "origin": "written",
-              "text": "{\"total\": 3}" }
-          ]
-        },
-        "check": { "type": "json_only" }   // 可选
-      }
-    ]
-  },
-
-  // 实际发生了什么：仅供人和评审参考，不是输入
-  "observed": {
-    "message": { "role": "assistant", "content": "好的，以下是整理结果：\n```json\n{...}\n```" },
-    "violates": ["r1"],
-    "followup": [{ "role": "user", "content": "我说了只要 JSON。" }]
-  },
-
-  // 如实记录拿不到或不确定的东西
-  "limitations": {
-    "system_prompt": "missing",          // missing | current_config | captured
-    "tools": "current_config",           // 工具定义取自扫描时的配置，可能与当时不同
-    "environment": ["需要 data.csv 的内容，已包含在工具结果中"],
-    "transforms": [{ "type": "redact", "kind": "api_key", "message": 1 }]
-  },
-
-  "provenance": {
-    "host": "pi", "host_version": "1.1.0",
-    "session": "s_9f3a…",               // 会话 ID 的哈希，不含本机路径
-    "cutoff_entry": "a1b2c3",           // Pi entry ID，便于本地回溯
-    "drafted_by": "model:deepseek-chat",// 或 rule:json-conflict@1、manual
-    "rubric_edited": false,             // 起草出的 rubric 用户有没有改过
-    "confirmed_at": "2026-10-11T14:02:11+08:00"
-  },
-
-  "hash": "sha256:…"                    // input + expected + limitations 的摘要
-}
-```
+| `detroit.case/v2` 字段 | CasePick 的取值 |
+| --- | --- |
+| `id` / `revision` | `casepick:<案例 ID>`；修改已确认的案例时 `revision` 加 1 |
+| `title`、`meta` | 草稿标题；`meta` 可以带 `domain`、`skill` 等标签 |
+| `task.kind` / `horizon` / `start` | 固定为 `agent` / `next_message` / `current`：只判出错位置的下一条回复，不执行工具 |
+| `task.messages` | 截止点之前的消息，OpenAI messages 格式（第 9 节转换），不含 system |
+| `task.system` | 拿不到时 `{ "status": "missing", "content": null }` |
+| `task.tools` | `source: "approximate"`，定义取自扫描时的配置 |
+| `task.environment` | 不涉及文件和外部状态时 `kind: "none"`；涉及时 `kind: "unavailable"`，并在 `limitations` 里说明 |
+| `task.output.format` | 由约束推出：`json_only` 对应 `json`，`tool_*` 对应 `tool_calls`，其余为 `text` |
+| `scoring`（内联默认评分） | 原要求、出处引文、rubric、约束（协议里叫 `checks`）；`combine` 固定为 `required_then_threshold`，所有原要求都是 `required: true` |
+| `diagnostic` | `observed`：原出错消息；`violates`：它违反的要求；`followup`：用户的纠正；`labels`：按 Detroit 失败分类体系的归因（可选） |
+| `provenance.source` | `kind: "session"`；`reference` 为会话 ID 哈希加截止点 entry ID；同一个会话拆出的案例共用 `group_key` |
+| `provenance.purpose` | 默认 `improvement`，导出时可以按批次改为 `validation`（第 11 节） |
+| `provenance.producer` | `{ "name": "casepick", "version", "method" }`，`method` 为 `model:<模型>`、`rule:<规则>@<版本>` 或 `manual` |
+| `provenance.limitations` / `transforms` | 系统提示缺失、工具定义近似、脱敏、截断、丢弃 thinking、省略图片等 |
+| `digests` | 按协议 §4 计算 `task` 和 `scoring` 两个摘要 |
+| `extensions["x-casepick"]` | CasePick 私有信息：`cutoff_entry`（Pi entry ID）、`host_version`、`rubric_edited`、`confirmed_at` 等，Detroit 原样保留、可以忽略 |
 
 几点说明：
 
-- **`input` 用 OpenAI messages 格式**，是因为这是事实上的通用格式，任何评测平台都能直接读。Pi 内部的消息格式在转换层处理（第 9 节）。
-- **`source.message` 是 `input.messages` 的下标**，`quote` 必须是那条消息的原文片段。下游拿到文件就能核对，不需要访问原会话。
-- **`observed` 和 `input` 严格分开。** 下游绝不能把整条记录当提示词，只能用 `input`。rubric 例子里引用的原出错输出片段也只给评审看，不给被测模型看。
-- **`system: null` 不代表没有系统提示**，而是拿不到。`limitations.system_prompt` 说明具体情况。
+- **`source.message` 是 `task.messages` 的下标**，`quote` 必须是那条消息的原文片段。Detroit 导入时会重新核对，不需要访问原会话。
+- **`diagnostic` 和 `task` 严格分开。** `diagnostic` 永远不进入被测模型的输入；rubric 例子里引用的原出错片段也只给评审看。
+- **改 rubric 或约束不改题。** 只改评分时 `digests.task` 不变，Detroit 能识别出这是同一道题的新评分，用已有的模型输出重新判分，不重跑被测模型。
+- **CasePick 不再输出 `quality` / `judge_mode`、单一 `hash` 和 `casepick.case/v1`。** 评审方式由有没有约束推出；摘要拆成两个。
+
+### CasePick 比协议更严格的地方
+
+协议允许的东西，CasePick 产出时收得更紧：
+
+| 协议的要求 | CasePick 的要求 |
+| --- | --- |
+| 要求有 `rubric` 或 `checks` 之一即可 | 每条要求**都必须有 rubric**，约束是额外的 |
+| `rubric.examples` 可选 | 至少一个 `origin: observed` 的 `fail` 例子，取自原出错输出 |
+| `source` 可选 | 每条要求都必须有 `{ message, quote }` 出处，且所引消息在截止点之前 |
+| `diagnostic` 可选 | 必须有 `observed` 和 `violates` |
 
 ### 评审标准（rubric）
 
-rubric 是案例质量的主要载体。下游评审模型能不能判得准、判得稳，几乎全看 rubric 写得好不好。每条 requirement 必须有一个 rubric，字段如下：
+rubric 是案例质量的主要载体。下游评审模型能不能判得准、判得稳，几乎全看 rubric 写得好不好。字段按协议 §7.5：
 
 | 字段 | 必填 | 含义 |
 | --- | --- | --- |
@@ -222,53 +173,50 @@ rubric 是案例质量的主要载体。下游评审模型能不能判得准、�
 | `pass` | 是 | 怎样算通过，描述输出里能直接观察到的特征 |
 | `fail` | 是 | 怎样算违反，同上 |
 | `edge_cases` | 否 | 容易误判的情况怎么判，一条一句 |
-| `examples` | 是 | 至少一个 `fail` 例子，且来自原出错输出；`pass` 例子可选 |
-| `scope` | 否 | 判定看哪部分输出：`text`（默认，文字回答）、`tool_calls`（工具调用）、`all` |
+| `examples` | 是（CasePick） | 至少一个来自原出错输出的 `fail` 例子；`pass` 例子可选 |
+| `scope` | 否 | 判定看哪部分输出：`final_text`（默认）、`all_text`、`tool_calls` |
 
 `examples[].origin` 的取值：
 
-- `observed`：原出错输出的原文片段，lint 会核对它确实出现在 `observed.message` 里（工具调用按参数 JSON 字符串核对）。
+- `observed`：原出错输出的原文片段，lint 会核对它确实出现在 `diagnostic.observed` 里（工具调用按参数 JSON 字符串核对）。
 - `written`：人或起草模型写的示意例子，不需要核对出处，但不能标成 `observed`。
+
+这些 `observed` 例子都是人确认过的"违反"样本，Detroit 可以直接拿来做 Judge 校准的人工标注集（Detroit `docs/07-methodology.md` §3）。
 
 **写 rubric 的规则**（起草提示词和审阅界面都按这些规则引导；能确定性检查的写进 lint）：
 
 1. **只判这一条要求。** rubric 的范围不能超过 `text` 和 `source.quote`，不能顺带判别的要求，也不能夹带用户后来才补充的要求。
-2. **只依赖评审能看到的东西。** 评审模型只看得到 `input`、被测输出和 rubric。判定需要的背景信息（比如"测试文件指 `tests/` 目录"）要么已经在 `input` 里，要么写进 rubric，不能依赖 `observed.followup` 或原会话。
+2. **只依赖评审能看到的东西。** 评审模型只看得到 `task`、被测输出和 rubric。判定需要的背景信息（比如"测试文件指 `tests/` 目录"）要么已经在 `task.messages` 里，要么写进 rubric，不能依赖 `diagnostic.followup` 或原会话。
 3. **描述可观察的行为，不描述意图。** "回答里出现了 X""调用了 Y 工具并修改了 Z 路径"，而不是"模型没有理解用户的意思"。
 4. **二元判定。** `pass` 和 `fail` 合起来覆盖所有情况；拿不准的情况写进 `edge_cases` 给出判法，不要留"视情况而定"。
 5. **不惩罚无关的差异。** 如果被测输出做对了这条要求、但在别的方面和原回答不同，应该判通过。
 6. **语言和原要求一致。** 原要求是中文，rubric 就用中文写。
 
-### 评审协议
+### 评审由 Detroit 负责
 
-插件不运行评审，但规定下游评审的输入和输出格式，让同一批案例在不同平台上的判定结果可以对齐：
-
-- **评审输入**：`input.messages`（可以只给与要求相关的最后几条，由下游决定）、被测输出、一条 requirement 的 `text` 和 `rubric`。一次只判一条 requirement。
-- **评审输出**：
-
-  ```json
-  { "requirement": "r1", "verdict": "pass", "evidence": "被测输出中支撑判定的原文片段", "reason": "一两句话" }
-  ```
-
-  `verdict` 取 `pass`、`fail` 或 `unclear`。`unclear` 只用于 rubric 确实没覆盖的情况，下游应该把它当成 rubric 需要改进的信号，而不是当成通过或违反。
-- **案例结论**：所有 requirement 都是 `pass` 才算通过。有约束的 requirement，约束的结果优先于 rubric 评审结果。
-
-导出时附带一份参考评审提示词模板（`casepick.judge/v1`，第 11 节），它把上面的协议写成可以直接发给评审模型的提示词。插件只交付这份模板，不调用它。
+评审的输入输出格式（`detroit.judge/v1`：一次判一条要求，结果是 `pass` / `fail` / `unknown`，附证据片段）、组合规则、用哪个评审模型和提示词，都由 Detroit 定义和执行（协议 §7.4、§7.6）。CasePick 不再随导出附带评审提示词模板；阶段 0 冒烟脚本里用的评审提示词只是开发工具（第 14 节）。
 
 ### 约束类型
 
-只支持有限的几种，不支持任意脚本。约束是 rubric 之外的补充，只在要求本身就能被精确判定时使用：
+约束是 rubric 之外的补充，只在要求本身就能被精确判定时使用。CasePick 只产出协议登记表（§7.3）里的离线检查，因为 `next_message` 题不执行工具，用不到 `command`、`tests` 这类在线检查：
 
 | 类型 | 含义 | 参数 |
 | --- | --- | --- |
 | `json_only` | 输出整体是合法 JSON | — |
 | `contains` / `not_contains` | 输出包含 / 不包含某段文字 | `text`、`ignore_case` |
-| `regex` / `not_regex` | 输出匹配 / 不匹配正则 | `pattern` |
+| `regex` / `not_regex` | 输出匹配 / 不匹配正则（ECMAScript 语法） | `pattern`、`flags` |
 | `tool_called` / `tool_not_called` | 调用了 / 没调用某工具，可限定参数 | `name`、`args_match` |
 
-`json_schema`（需要用户手写 schema）和 `language`（短文本、中英混合时检测不可靠）先不做。阶段 0 统计样板案例里实际需要哪些约束，确实需要再加。每加一种都要给 schema 版本号升一个小版本。
+协议里的 `json_schema` 先不产出（需要用户手写 schema）。阶段 0 统计样板案例里实际需要哪些约束，确实需要再加；需要协议里还没有的类型时，先向 Detroit 提出登记。
 
-每种约束类型配一份默认 rubric 模板（比如 `json_only` 对应上面例子里的 rubric），规则起草和手填时自动带出，保证约束和 rubric 判的是同一件事。
+每种约束类型配一份默认 rubric 模板（比如 `json_only` 对应 Detroit 示例里的 rubric），规则起草和手填时自动带出，保证约束和 rubric 判的是同一件事。
+
+已实现 `core/checks.ts` 的 `evaluateCheck(check, observed)`：输入现有 `Check` 和单条 `AssistantMessage`，返回 `{ verdict: "pass" | "fail" | "unknown", reason }`。只验证录制输出，不执行工具、不调用模型、不合并要求级评分；调用方负责输入结构校验。
+
+- 单条 `next_message` 的 `final_text` 和 `all_text` 都读取 `content`；`null` 按空文字处理，不混入工具参数。文字检查指定 `tool_calls` 时返回 `unknown`：Detroit 尚未定义其序列化规则。
+- `json_only` 接受所有合法 JSON 值，但不剥离解释或 Markdown 代码围栏。忽略大小写采用 ECMAScript `toLowerCase()`；正则仅接受 `i/m/s/u`，非法表达式或重复 flags 返回 `unknown`。
+- `args_match` 的本地约定：对象递归匹配自有属性子集；数组按完整值匹配，保留长度与顺序。Detroit 目前只规定“参数子集匹配”，更细的跨实现语义仍需对齐。
+- 不限定参数时仅匹配工具名；限定参数时，同名调用的参数若不是合法 JSON 对象，且不存在其他确定匹配，返回 `unknown`。任一确定匹配优先；无匹配且无不确定项时，`tool_called` 失败、`tool_not_called` 通过。
 
 ## 8. 生产流程
 
@@ -285,7 +233,7 @@ Pi 会话文件
                          草稿 ──⑤ 用户审阅、修改、确认──► 案例库
                                                           │ ⑥ 导出
                                                           ▼
-                                              JSONL 文件 + 参考评审提示词
+                                       Detroit 评测集（cases.jsonl + dataset.json）
 ```
 
 ### ① 读取历史
@@ -333,7 +281,7 @@ Pi 会话文件
 
 | 检查 | 不通过时 |
 | --- | --- |
-| `input` 只包含截止点之前的消息 | 阻止确认 |
+| `task.messages` 只包含截止点之前的消息 | 阻止确认 |
 | 每条原要求的 `quote` 确实出现在所引用消息的原文里 | 阻止确认 |
 | 被引用的消息在截止点之前 | 阻止确认：这是"后来才提的要求" |
 | 工具调用和工具结果一一配对，顺序和原文一致 | 阻止确认 |
@@ -341,13 +289,23 @@ Pi 会话文件
 | 每条原要求都有 rubric，`question`、`pass`、`fail` 非空 | 阻止确认 |
 | 每个 rubric 至少有一个 `origin: observed` 的 `fail` 例子 | 阻止确认 |
 | `origin: observed` 的例子确实出现在原出错输出里 | 阻止确认：这条例子被清空 |
-| rubric 里出现了 `observed.followup` 中较长的原文片段（默认 ≥ 12 个字符） | 警告：可能用了截止点之后的信息，请确认 |
+| rubric 里出现了 `diagnostic.followup` 中较长的原文片段（默认 ≥ 12 个字符） | 警告：可能用了截止点之后的信息，请确认 |
 | rubric 各字段超出长度建议（`question` 200 字，其他 500 字） | 警告：评审标准过长，容易判不稳 |
 | 每条约束套在原出错输出上都判定为"违反" | 该约束标红；没有任何有效约束时，评审方式为 `rubric` |
 | 脱敏没有改动被引用的原文和 `observed` 例子 | 阻止确认，提示用户处理 |
-| `input` 能序列化成合法的 Chat Completions 请求体 | 阻止确认 |
+| `task.messages` 和 `task.tools` 能序列化成合法的 Chat Completions 请求体 | 阻止确认 |
+| 整条案例通过 Detroit JSON Schema 校验，两个摘要和重新计算的结果一致 | 阻止确认（只在确认前和导出前检查） |
 
 注意：约束检查只把约束套在**原来那条出错输出**上，用来检验数据本身写得对不对，不调用任何模型，不属于评测。rubric 只做结构和出处检查，插件不调用评审模型去验证 rubric（是否提供手动的 rubric 自检见第 18 节）。
+
+已实现的核心接口：
+
+- `core/rubric.ts`：`emptyRubric()` 返回手填草稿，填写提示单独由 `rubricHints` 提供；`rubricForCheck(check, observed?)` 为七种约束生成默认模板。只有 `evaluateCheck` 对原输出判为 `fail` 才预填原文反例，否则保留空例子等待人工填写。`rubricErrors(value)` 检查 schema 和纯空白字段，返回 `{ path, message }[]`。
+- `core/lint.ts`：`lintCase(value, options?)` 返回 `{ valid, issues, checks, reviewMode, cutoffVerified }`。`issues` 包含严重级别、稳定错误码、JSON Pointer 路径和提示；`checks` 保留逐条约束结果，只有 `fail` 标为 `usable`，至少一条有效约束时 `reviewMode` 为 `program`。这些结果只供调用方使用，不新增交换格式字段。
+- `options.stage` 默认为 `draft`，允许尚未填写完整的顶层信封和摘要；`confirm` / `export` 检查完整 CasePick schema（Detroit 的严格子集）及两个摘要。结构错误会先返回，正文结构通过后再检查跨字段关系。`valid` 仅表示当前阶段没有错误，警告仍需要审阅。
+- 截止点核对需要调用方传入 `source: { entries: [{ id, message }], cutoffEntry }`，快照必须独立来自当前分支，并包含出错消息本身；消息应已完成格式转换、压缩上下文选择和与案例一致的脱敏。核对截止点前完整输入、出错消息及保存的截止点 ID，不能用待检查案例反向构造快照。`confirm` 缺少快照会报错；草稿和独立导出缺少快照会警告并返回 `cutoffVerified: false`，不宣称已验证原会话。
+- 有脱敏记录时，确认还需提供 `beforeRedaction: { messages, observed }`，核对引文和原文例子在脱敏前的对应输入、输出中也存在。草稿或独立导出缺少此快照时返回未核对警告。导出流程若再次脱敏，应传入本次脱敏前快照。`followupMinLength` 可以调整后续内容重合警告的阈值，默认 12 个 Unicode 字符；长度建议分别为判定问题 200 字、其他文字字段 500 字。
+- 两个模块均不修改案例。不存在的引文或反例由 lint 报出字段路径，清空字段和提示人工补充由起草 / 审阅流程处理。
 
 ### ⑤ 审阅与确认
 
@@ -399,10 +357,12 @@ Pi 的消息格式和 OpenAI messages 不同，转换规则集中在一个模块
 ```
 casepick/
   config.json       起草模型配置（不含密钥明文）、脱敏规则、读取上限
-  cases.jsonl       所有案例版本，一行一个，只追加
+  cases.jsonl       所有草稿和案例版本，一行一个，只追加
   marks.jsonl       书签：会话 ID + entry ID + 时间，不含内容
-  exports.jsonl     导出记录：时间、路径、包含的案例版本、文件摘要
+  exports.jsonl     导出记录：时间、路径、包含的案例 ID、revision 和两个摘要、文件摘要
 ```
+
+- **记录格式**：`cases.jsonl` 每行是一条 `detroit.case/v2` 结构的记录，状态（草稿、已确认、已删除）和版本历史放在 `extensions["x-casepick"]` 里。草稿可以不完整，所以只有已确认的记录保证通过 Detroit Schema 校验。
 
 - **为什么用 JSONL 而不是数据库**：数据量小（个人使用，几百到几千条），追加写入简单可靠，人可以直接打开看，导出几乎等于复制。
 - **写入**：追加一行。多个 Pi 窗口同时写也安全，因为每行很小，用追加模式打开文件即可。
@@ -414,10 +374,13 @@ casepick/
 
 `/casepick export` 默认导出所有已确认案例的最新版本，可以按评审方式、类型、时间筛选。
 
-- **默认格式**：每行一条第 7 节的完整案例。同目录下附带 `casepick-judge-v1.md`，即参考评审提示词模板（第 7 节"评审协议"），模板里用占位符表示 `input`、被测输出、要求和 rubric。
+- **默认格式**：Detroit 评测集的内联打包方式（协议 §9），导出到一个目录：
+  - `cases.jsonl`：每行一条 `detroit.case/v2`，评分内联；
+  - `dataset.json`：一份 `detroit.dataset/v2`，列出本批案例的 ID、revision 和两个摘要。`purpose` 由导出时选择，默认 `improvement`；选 `validation` 时，案例自身的 `provenance.purpose` 也要是 `validation`，并且不能和以往导出的改进集共用 `group_key`，否则导出前提示。
+- **只导出评分**：已确认的案例只改了 rubric 或约束（`digests.task` 没变）时，可以选择只导出 `scorings.jsonl`，每行一份 `detroit.scoring/v2`，用 `target.task_digest` 指向原题。Detroit 用它对已有结果重新评分，不需要重新导入题目。
 - **`--format inspect`**：每行 `{id, input, target, metadata}`，可以直接作为 [Inspect AI](https://inspect.aisi.org.uk/) 数据集读取。`target` 是把各条要求和 rubric 渲染成的评分说明，可以直接交给 Inspect 的模型评分器；其余字段放进 `metadata`。
 
-写入时先写临时文件，逐行解析校验通过后再改名为目标文件。目标已存在时要求用户确认覆盖。
+写入时先写临时文件，逐行用 Detroit JSON Schema 校验并核对摘要，通过后再改名为目标文件。目标已存在时要求用户确认覆盖。
 
 ## 12. 命令
 
@@ -431,7 +394,15 @@ casepick/
 
 状态栏只显示进行中的操作和待审数量，不弹逐条通知。非交互模式（比如 print 模式）下拒绝执行，并说明原因。
 
-命令解析在 `src/command.ts`（纯函数，有单元测试），`src/extension.ts` 只负责注册和分发。目前所有子命令都只提示"尚未实现"。
+命令解析在 `src/command.ts`，`src/extension.ts` 负责注册和分发。
+
+**当前实现（2026-10-13）：** `/casepick` 已打通本地生成流程：读取当前分支 → 选择候选或手动选择任意历史回复 → 规则起草 / 手动补充要求与 rubric → lint → 审阅确认 → 追加保存 `cases.jsonl`。不依赖起草模型，不向会话插入消息，不运行工具。`mark`、`cases`、`export`、`config` 仍是待实现入口。
+
+- 读取使用 Pi 1.1.0 的 `getBranch()`；选定回复后用 `buildSessionProjection(branch, cutoff.parentId)` 和 `convertToLlm()` 重建当时输入，保留压缩摘要、分支摘要及截止点之前的上下文编辑。不会把后来发生的压缩或编辑回溯应用到旧输入。超过 2000 条消息 / 20 MB 时停止并明确提示，不用截断历史生成案例。
+- 本地信号包含用户纠正、JSON / 代码块格式冲突、工具报错后用户介入和异常中止。信号不等于错误结论；规则只对最近一条用户消息里的明确 JSON / 代码块要求预填草稿，选中后按实际输入重新计算出处。所有历史 assistant 回复都可手动选择。
+- 审阅支持编辑标题、添加 / 编辑 / 删除要求、选择程序约束、填写 rubric 和环境依赖、查看完整输入与检查结果。输入及原出错输出保持快照原文；引用和反例必须能够逐字核对。返回候选后，本次扫描内已编辑的草稿仍保留；退出扫描后未确认草稿丢弃，暂不提供草稿持久化或已有案例版本管理。
+- 确认时展示路径和大小，重新计算摘要并运行 `confirm` lint，要求错误清零且截止点核对通过，警告需由用户接受。保存位置为 `$XDG_DATA_HOME/casepick/cases.jsonl`，未配置时为 `~/.local/share/casepick/cases.jsonl`；目录权限 0700，文件权限 0600，追加写入使用独占锁避免多窗口记录交错。
+- 本阶段保存的是本地原文，没有自动脱敏或对外发送。工具定义取扫描时配置并标为近似；系统提示只取会话保存的数据，中途更新的提示合并后标为近似；其他扩展及供应商临时改写无法从会话恢复，会记入局限。工具参数由 Pi 保存的对象重新序列化，无法恢复原始 JSON 空白。图片省略、思考内容丢弃均记录在 transforms 中。
 
 ## 13. 代码结构
 
@@ -449,6 +420,7 @@ src/
     draft-rule.ts       规则起草
     draft-model.ts      模型起草和结果核对
     checks.ts           约束类型及判定（第 7 节）
+    digest.ts           RFC 8785 规范化和 task / scoring 摘要（协议 §4）
     rubric.ts           rubric 模板（每种约束一份默认模板、手填空模板）和结构检查
     lint.ts             质量检查（第 8 节④）
     redact.ts           脱敏
@@ -456,15 +428,14 @@ src/
     cases.ts            cases.jsonl 读写、版本、删除
     marks.ts
   export/
-    export.ts
-    judge-prompt.ts     参考评审提示词模板 casepick.judge/v1
+    export.ts           Detroit 内联打包、只导出评分、Inspect 格式
   schema/
-    case.ts             TypeBox schema，类型由它推导
+    case.ts             TypeBox schema，类型由它推导；和 Detroit schemas/detroit-v2.schema.json 对齐，测试里用后者校验产出
 scripts/
   smoke.ts              冒烟脚本，不属于插件（第 14 节）
 ```
 
-技术选型：TypeScript strict 模式；TypeBox 加 Ajv 做 schema 校验；Node 自带的 `node:test` 写单元测试（Node 22.18+ 直接运行 .ts，不引入测试依赖）；起草模型请求用原生 `fetch`；不引入数据库。
+技术选型：TypeScript strict 模式；TypeBox 定义 schema，运行时用 TypeBox 自带的校验（不引入 Ajv 运行时依赖）；测试里用 Ajv 跑 Detroit 的 JSON Schema，核对 CasePick 的产出 Detroit 一定接受；Node 自带的 `node:test` 写单元测试（Node 22.18+ 直接运行 .ts，不引入测试依赖）；起草模型请求用原生 `fetch`；不引入数据库。
 
 `core/` 不导入任何 Pi 的东西。以后适配 OMP，只需要新增一个 `omp/` 目录。
 
@@ -472,12 +443,12 @@ scripts/
 
 ### 阶段 0：先手工做出样板
 
-先不写插件。从自己的 Pi 会话里挑 10–20 个真实的犯错场景，手工写成第 7 节格式的案例（每条要求都写 rubric），同时写好 `schema/`、`core/checks.ts`、`core/rubric.ts`、`core/lint.ts` 和参考评审提示词。
+先不写插件。从自己的 Pi 会话里挑 10–20 个真实的犯错场景，手工写成第 7 节格式的案例（每条要求都写 rubric），同时写好 `schema/`、`core/digest.ts`、`core/checks.ts`、`core/rubric.ts`、`core/lint.ts`。样板直接用 `detroit.case/v2` 格式，并且要能通过 Detroit 的 JSON Schema 校验。
 
 再写 `scripts/smoke.ts`，它不属于产品功能，只用来确认数据确实能用：
 
-1. 读取 JSONL，把每条 `input` 发给一个 OpenAI 兼容模型，打印模型输出和 `expected`，并列放在一起。
-2. 用参考评审提示词，让评审模型按 rubric 判一次**原出错输出**，同一条重复判 3 次。期望结果是每次都判"违反"。判成"通过"或前后不一致，说明 rubric 写得不够清楚。
+1. 读取 JSONL，把每条 `task.messages` 和 `task.tools` 发给一个 OpenAI 兼容模型，打印模型输出和 `scoring.requirements`，并列放在一起。
+2. 用脚本里自带的评审提示词（按 `detroit.judge/v1` 的请求和响应格式），让评审模型按 rubric 判一次**原出错输出**，同一条重复判 3 次。期望结果是每次都判"违反"。判成"通过"或前后不一致，说明 rubric 写得不够清楚。
 
 **完成标准：**
 - 所有样板通过 lint。
@@ -490,7 +461,7 @@ scripts/
 
 ### 阶段 1：Pi 上不用模型也能走通
 
-读取当前分支、候选规则、手填和规则起草（含 rubric 模板）、lint、审阅确认、本地存储、导出（含参考评审提示词），同时收敛命令。
+读取当前分支、候选规则、手填和规则起草（含 rubric 模板）、lint、审阅确认、本地存储、导出 Detroit 评测集，同时收敛命令。
 
 **完成标准：**
 - 在真实 Pi 会话里，从扫描到导出完整走通。
@@ -513,19 +484,20 @@ scripts/
 
 ## 15. 必须通过的场景
 
-1. 用户先说"只输出 JSON"，模型违反，随后用户纠正：生成评审方式为 `program` 的案例；`input` 里有原要求，没有出错回答和纠正。
+1. 用户先说"只输出 JSON"，模型违反，随后用户纠正：生成评审方式为 `program` 的案例；`task.messages` 里有原要求，没有出错回答和纠正。
 2. 用户在模型回答**之后**才第一次提出"只输出 JSON"：lint 拦下，提示"要求出现在截止点之后"。
-3. 原要求所在的消息已被压缩：`input` 里是压缩摘要；如果摘要里找不到原要求，就无法引用，案例不能确认。
+3. 原要求所在的消息已被压缩：`task.messages` 里是压缩摘要；如果摘要里找不到原要求，就无法引用，案例不能确认。
 4. 会话有分支：扫描结果不包含已放弃分支上的消息。
 5. 截止点前有多个并行工具调用：转换后调用和结果一一配对，顺序与原文一致。
 6. 起草模型返回不存在的消息编号或伪造的引文：对应字段被清空并标为需要人工补，不会自动重试。
 7. 外发前预览的内容和实际发送的请求一致；取消后不再发送剩余请求。
 8. 约束对原出错输出判定为"通过"：该约束标红，评审方式降为 `rubric` 或要求修改。
 9. 删除案例后重新导出：被删的案例不出现在文件中；另一个 Pi 窗口同时追加的案例不会丢失。
-10. 导出文件拿到另一台机器上，不依赖 Pi 和原会话，也能独立解析和核对所有引文和 `observed` 例子。
+10. 导出文件拿到另一台机器上，不依赖 Pi 和原会话，也能通过 Detroit 的 JSON Schema 校验和导入检查（协议 §10），并核对所有引文和 `observed` 例子。
 11. 要求无法写成约束（比如"改代码前先问我"）：手填 rubric 后可以确认，评审方式为 `rubric`；rubric 缺 `fail` 例子时不能确认。
 12. rubric 里大段照抄了用户的纠正语：lint 给出警告，用户确认后才能继续。
 13. 起草模型给出的 `observed` 例子在原出错输出里找不到：该例子被清空，rubric 因缺少 `fail` 例子而标为需要人工补。
+14. 已确认的案例只改了 rubric：新版本的 `digests.task` 不变、`digests.scoring` 改变；只导出评分时得到的 `detroit.scoring/v2` 的 `target.task_digest` 等于原题摘要。
 
 ## 16. 指标
 
@@ -544,15 +516,18 @@ scripts/
 | --- | --- | --- |
 | Pi 扩展 API 拿不到完整的分支历史 | 阶段 1 第一件事：在 Pi 1.1.0 上实测 | 改为读会话 JSONL 文件，按 Pi 文档中的会话格式解析，并锁定支持的版本 |
 | 压缩后会话文件里是否还保留原始条目，以及压缩摘要以什么形式进入上下文 | 构造一个触发压缩的会话，对照会话文件 | 按实际行为处理；不确定的部分写进 `limitations` |
-| 会话里没有系统提示和当时的工具定义 | 检查会话格式 | 标记为 `missing` 或 `current_config`，案例照样可用 |
+| 会话里没有系统提示和当时的工具定义 | 检查会话格式 | 标记为 `missing` 或 `approximate`，案例照样可用 |
+| Detroit 协议还是草案，字段可能变化 | 跟踪 Detroit `docs/10-dataset-format.md` 的审阅结果 | 格式相关代码集中在 `schema/`、`core/digest.ts`、`export/`；测试直接用 Detroit 的 JSON Schema 校验，协议变了测试会先失败 |
 | 候选规则漏报多 | 用阶段 0 的样板反查：规则能否找到这些位置 | 补充规则；书签兜底 |
 | 模型起草的引文不可靠 | 阶段 2 的 20 条基线 | 改提示词；引文核对本身保证错误的引文进不了案例 |
 | rubric 写得含糊，评审模型判不稳 | 阶段 0、2 用冒烟脚本对原出错输出重复评审 | 收紧第 7 节的写法规则，改起草提示词和默认模板；必要时增加 rubric 字段 |
 | rubric 偷偷用了截止点之后的信息（比如照抄纠正语） | 阶段 0 人工复查样板；lint 警告的命中情况 | 调整警告阈值；在起草提示词里更明确地禁止 |
 | 用户嫌写 rubric 麻烦，审阅变慢 | 阶段 1、2 统计编辑 rubric 的耗时 | 加强默认模板和模型起草；审阅界面只突出需要人工补的字段 |
-| 截止点前历史很长，`input` 过大 | 统计阶段 0 样板的大小 | 提供截断工具输出的选项，并记录截断 |
+| 截止点前历史很长，`task.messages` 过大 | 统计阶段 0 样板的大小 | 提供截断工具输出的选项，并记录截断 |
 
 ## 18. 待确认的决策
+
+已确认（2026-10-12）：案例格式直接采用 Detroit 定义的 `detroit.case/v2`；评分可以和题目分开分发（Detroit 09 D10、D11）；导出时 `purpose` 默认 `improvement`，因为日常犯错攒下的案例很可能会被拿去调提示词，错把改进数据当验证数据会高估泛化能力。
 
 以下几点本文按左列的方案写，如果不同意需要调整：
 
@@ -564,7 +539,15 @@ scripts/
 
 ## 19. 与上一版相比的变化
 
-**2026-10-12（本版）：**
+**2026-10-12 第二版（本版）：**
+
+- **案例格式改为 Detroit 评测集格式 `detroit.case/v2`**，不再定义 `casepick.case/v1`。字段映射见第 7 节；`input` → `task`，`expected` → `scoring`，`observed` → `diagnostic`。
+- **去掉 `quality` / `judge_mode` 和单一 `hash`**，改为 `digests.task` 和 `digests.scoring` 两个摘要。
+- **评审协议和评审提示词交给 Detroit**，导出不再附带 `casepick-judge-v1.md`；`export/judge-prompt.ts` 删除。
+- **导出改为 Detroit 内联打包**（`cases.jsonl` + `dataset.json`），新增"只导出评分"；导出前用 Detroit JSON Schema 校验。
+- 新增 `core/digest.ts`、场景 14 和协议变化风险；确认导出时 `purpose` 默认 `improvement`。
+
+**2026-10-12 第一版：**
 
 - **新增评审标准（rubric）**，作为案例质量的主要载体：每条要求必须有 rubric，包括判定问题、通过和违反的标准、边界情况、例子，并且至少一个 `fail` 例子取自原出错输出。
 - **新增评审协议和参考评审提示词模板**（`casepick.judge/v1`），随导出交付，插件本身不运行评审。

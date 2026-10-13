@@ -12,16 +12,25 @@
     "test": "node --test test/*.test.ts",
     "dev:pi": "pi --extension ./src/extension.ts"
   },
-  "keywords": ["pi-package"],
+  "keywords": [
+    "pi-package"
+  ],
   "pi": {
-    "extensions": ["./src/extension.ts"]
+    "extensions": [
+      "./src/extension.ts"
+    ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-coding-agent": ">=1.1.0"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "1.1.0",
-    "typescript": "5.9.3",
-    "@types/node": "22.19.0"
+    "@types/node": "22.19.0",
+    "ajv": "8.17.1",
+    "ajv-formats": "3.0.1",
+    "typescript": "5.9.3"
+  },
+  "dependencies": {
+    "@sinclair/typebox": "0.34.33"
   }
 }

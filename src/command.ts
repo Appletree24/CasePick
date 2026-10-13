@@ -101,7 +101,8 @@ export function helpText(topic?: SubcommandName): string {
   }
   return [
     "CasePick — 把 Agent 的犯错整理成评测案例",
-    "  /casepick — 扫描当前分支并审阅候选",
+    "  /casepick — 从当前会话选择回复，起草、审阅并保存案例",
+    "  支持本地格式规则和手动填写，不需要配置起草模型。",
     ...subcommands.map(({ usage, description }) => `  ${usage} — ${description}`),
     "运行 /casepick help <子命令> 查看单个子命令的说明。",
   ].join("\n");
