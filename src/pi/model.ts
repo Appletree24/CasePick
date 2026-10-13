@@ -29,13 +29,29 @@ function modelName(model: Model<Api>): string {
 
 export type ResolveResult = { ok: true; value: DraftModel } | { ok: false; reason: string };
 
+// OMP 的模型角色：用户在 /model 面板里给 casepick 角色指派模型。Pi 没有 ctx.models，返回 undefined。
+export const modelRole = "casepick";
+
+export function roleModel(ctx: ExtensionCommandContext): Model<Api> | undefined {
+    const models = (ctx as { models?: { resolve(spec: string): Model<Api> | undefined } }).models;
+    try {
+        return models?.resolve(`@${modelRole}`);
+    } catch {
+        return undefined;
+    }
+}
+
 // 每次起草时解析：跟随当前模型时取发起这一刻的会话模型，不在配置里写死。
 export function resolveDraftModel(ctx: ExtensionCommandContext, config: Config): ResolveResult {
     const choice = config.drafting.model;
     if (choice.mode === "off") return { ok: false, reason: "配置为不使用起草模型；可以在 /casepick config 里修改" };
     let model: Model<Api> | undefined;
+    let origin = "";
     if (choice.mode === "follow_current") {
-        model = ctx.model as Model<Api> | undefined;
+        // 默认：OMP 里给 casepick 角色指派了模型就用它，否则跟随当前会话的模型。
+        model = roleModel(ctx);
+        if (model) origin = `OMP 角色 @${modelRole}`;
+        else model = ctx.model as Model<Api> | undefined;
         if (!model) return { ok: false, reason: "当前会话没有选定模型；请先选择模型，或在 /casepick config 里固定一个起草模型" };
     } else {
         model = ctx.modelRegistry.getAvailable().find((item) => item.provider === choice.provider && item.id === choice.id)
@@ -48,7 +64,7 @@ export function resolveDraftModel(ctx: ExtensionCommandContext, config: Config):
         ok: true,
         value: {
             model, key: modelKey(model), reasoning: reasoning.level, note: reasoning.note,
-            label: `${modelName(model)} · ${reasoning.level ?? "不使用思考等级"}`,
+            label: `${modelName(model)} · ${reasoning.level ?? "不使用思考等级"}${origin ? `（${origin}）` : ""}`,
         },
     };
 }

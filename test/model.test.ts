@@ -77,3 +77,27 @@ test("外发前脱敏并统计命中", () => {
     assert.doesNotMatch(request.prompt.user, /sk-abc/);
     assert.deepEqual(request.hits, [{ kind: "api_key", count: 1 }]);
 });
+
+test("OMP 给 casepick 角色指派了模型时优先使用，否则跟随当前模型", () => {
+    const withRole = { ...context(), models: { resolve: (spec: string) => (spec === "@casepick" ? plain : undefined) } } as unknown as ExtensionCommandContext;
+    const result = resolveDraftModel(withRole, defaultConfig());
+    assert.ok(result.ok);
+    assert.equal(result.value.key, "acme/plain");
+    assert.match(result.value.label, /OMP 角色 @casepick/);
+    const noRole = { ...context(), models: { resolve: () => undefined } } as unknown as ExtensionCommandContext;
+    const fallback = resolveDraftModel(noRole, defaultConfig());
+    assert.ok(fallback.ok && fallback.value.key === "acme/astra");
+    // 固定模型时不看角色。
+    const config = defaultConfig();
+    config.drafting.model = { mode: "fixed", provider: "acme", id: "astra" };
+    const fixed = resolveDraftModel(withRole, config);
+    assert.ok(fixed.ok && fixed.value.key === "acme/astra");
+});
+
+test("编辑框以回车提交的方式打开", async () => {
+    const { promptEditor } = await import("../src/pi/ui.ts");
+    const calls: unknown[][] = [];
+    const ui = { editor: (...args: unknown[]) => { calls.push(args); return Promise.resolve("x"); } };
+    assert.equal(await promptEditor(ui as never, "标题", "预填"), "x");
+    assert.deepEqual(calls[0], ["标题", "预填", undefined, { promptStyle: true }]);
+});

@@ -19,7 +19,7 @@ import {
     assistEntries, currentSession, entryTime, findSessionFile, listSessions, loadSessionFile, sourceReferences,
     type LoadedSession,
 } from "./sources.ts";
-import { pick, reviewCase, showText } from "./ui.ts";
+import { pick, promptEditor, reviewCase, showText } from "./ui.ts";
 
 interface Workspace {
     pi: ExtensionAPI;
@@ -43,7 +43,7 @@ async function save(ws: Workspace, issue: Issue): Promise<boolean> {
 
 async function text(ws: Workspace, title: string, prefill = "", required = true): Promise<string | undefined> {
     while (true) {
-        const value = await ws.ctx.ui.editor(title, prefill);
+        const value = await promptEditor(ws.ctx.ui, title, prefill);
         if (value === undefined) return undefined;
         if (!required || value.trim()) return value;
         ws.ctx.ui.notify("请填写内容，或按取消返回。", "warning");

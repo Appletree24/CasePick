@@ -4,13 +4,29 @@ import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { reasoningLevels, resolveReasoning, supportedLevels, type ReasoningLevel } from "../core/reasoning.ts";
 import { configPath, loadConfig, saveConfig, type Config } from "../store/config.ts";
-import { modelKey, resolveDraftModel } from "./model.ts";
-import { pick } from "./ui.ts";
+import { modelKey, modelRole, resolveDraftModel, roleModel } from "./model.ts";
+import { pick, showText } from "./ui.ts";
+
+const roleHelp = `OMP 支持自定义模型角色。声明一次 ${modelRole} 角色后，就能在 /model 面板里像给 @slow 指派模型一样给它选模型：
+
+1. 在 ~/.omp/agent/config.yml 里加上：
+
+modelTags:
+  ${modelRole}:
+    name: CasePick
+
+2. 打开 /model，在角色列表里找到 CasePick，选一个模型。
+
+之后起草模型设为“跟随当前模型”（默认）时，CasePick 优先使用这个角色的模型；没有指派时才跟随当前会话的模型。
+思考等级仍在这里配置（默认 low），角色值里的思考后缀不会被读取。
+Pi 没有模型角色，这一项只在 OMP 里生效。`;
 
 function describeModel(ctx: ExtensionCommandContext, config: Config): string {
     const choice = config.drafting.model;
     if (choice.mode === "off") return "不使用模型";
     if (choice.mode === "follow_current") {
+        const role = roleModel(ctx);
+        if (role) return `OMP 角色 @${modelRole}（现在是 ${(role as { name?: string }).name || role.id}）`;
         const current = ctx.model as Model<Api> | undefined;
         return `跟随当前模型（现在是 ${current ? (current as { name?: string }).name || current.id : "未选择"}）`;
     }
@@ -20,14 +36,18 @@ function describeModel(ctx: ExtensionCommandContext, config: Config): string {
 // 思考等级按所选模型的能力列出；跟随当前模型时按当前模型列出。
 function targetModel(ctx: ExtensionCommandContext, config: Config): Model<Api> | undefined {
     const choice = config.drafting.model;
-    if (choice.mode === "follow_current") return ctx.model as Model<Api> | undefined;
+    if (choice.mode === "follow_current") return roleModel(ctx) ?? ctx.model as Model<Api> | undefined;
     if (choice.mode === "fixed") return ctx.modelRegistry.find(choice.provider, choice.id);
     return undefined;
 }
 
 async function chooseModel(ctx: ExtensionCommandContext, config: Config): Promise<boolean> {
-    const top = await ctx.ui.select("起草模型", ["跟随当前模型（默认）", "选择一个已配置的模型", "不使用模型（只用规则和手填）", "返回"]);
+    const top = await ctx.ui.select("起草模型", ["跟随当前模型（默认；OMP 里配置了 @casepick 角色时优先用它）", "选择一个已配置的模型", "不使用模型（只用规则和手填）", "在 OMP 的 /model 面板里指定", "返回"]);
     if (!top || top === "返回") return false;
+    if (top.startsWith("在 OMP")) {
+        await showText(ctx.ui, "在 OMP 的 /model 面板里指定起草模型", roleHelp);
+        return false;
+    }
     if (top.startsWith("跟随")) config.drafting.model = { mode: "follow_current" };
     else if (top.startsWith("不使用")) config.drafting.model = { mode: "off" };
     else {

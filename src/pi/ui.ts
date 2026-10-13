@@ -42,9 +42,17 @@ export async function showText(ui: ExtensionUIContext, title: string, text: stri
     }
 }
 
+type PromptEditor = (title: string, prefill?: string, dialogOptions?: object, editorOptions?: { promptStyle?: boolean }) => Promise<string | undefined>;
+
+// OMP 的编辑框默认 Ctrl+Q / Ctrl+Enter 提交；promptStyle 改为回车提交、Shift+Enter 换行，和主输入框一致。
+// Pi 的编辑框本来就是回车提交，只接收前两个参数，多余的参数被忽略。
+export function promptEditor(ui: ExtensionUIContext, title: string, prefill = ""): Promise<string | undefined> {
+    return (ui.editor as PromptEditor).call(ui, title, prefill, undefined, { promptStyle: true });
+}
+
 async function editText(ui: ExtensionUIContext, title: string, prefill = "", required = true): Promise<string | undefined> {
     while (true) {
-        const text = await ui.editor(title, prefill);
+        const text = await promptEditor(ui, title, prefill);
         if (text === undefined) return undefined;
         if (!required || text.trim()) return text;
         ui.notify("请填写内容，或按取消返回。", "warning");
