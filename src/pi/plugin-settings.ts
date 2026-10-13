@@ -12,6 +12,7 @@ export interface PluginOverrides {
     reasoning?: ReasoningLevel;
     maxOutputTokens?: number;
     timeoutSeconds?: number;
+    debug?: boolean;
 }
 
 export interface PluginSettingsResult {
@@ -25,10 +26,16 @@ export type SettingsLoader = (name: string, cwd: string) => Promise<Record<strin
 
 // OMP 的兼容加载器把 @oh-my-pi/* 的子路径映射到宿主自带的包；Pi 上这个导入会失败。
 async function hostLoader(): Promise<SettingsLoader | undefined> {
-    const specifier = "@oh-my-pi/pi-coding-agent/extensibility/plugins/loader";
     try {
-        const module = await import(specifier) as { getPluginSettings?: SettingsLoader };
-        return typeof module.getPluginSettings === "function" ? module.getPluginSettings : undefined;
+        // 必须用字面量，OMP 的编译版只改写可静态识别的导入；Pi 未安装此宿主专用模块，不能静态导入。
+        // @ts-expect-error OMP 专用 API 由宿主提供，不是 Pi 项目的依赖。
+        const { PluginManager } = await import("@oh-my-pi/pi-coding-agent/extensibility/plugins/manager") as {
+            PluginManager?: new (cwd: string) => { getPluginSettings(name: string): Promise<Record<string, unknown>> };
+        };
+        // 每次读取创建 manager，避免复用它缓存的全局设置；项目覆盖由宿主合并。
+        return typeof PluginManager === "function"
+            ? (name, cwd) => new PluginManager(cwd).getPluginSettings(name)
+            : undefined;
     } catch {
         return undefined;
     }
@@ -58,6 +65,10 @@ export function parseOverrides(raw: Record<string, unknown>): { overrides: Plugi
     if (set("timeoutSeconds")) {
         overrides.timeoutSeconds = numberIn(raw.timeoutSeconds, 10, 3600);
         if (overrides.timeoutSeconds === undefined) warnings.push("timeoutSeconds 应为 10–3600 的整数，已忽略");
+    }
+    if (set("debug")) {
+        if (typeof raw.debug === "boolean") overrides.debug = raw.debug;
+        else warnings.push("debug 应为布尔值，已忽略");
     }
     for (const key of Object.keys(overrides) as (keyof PluginOverrides)[]) if (overrides[key] === undefined) delete overrides[key];
     return { overrides, warnings };

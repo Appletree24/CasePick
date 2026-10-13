@@ -226,11 +226,19 @@ describe("长程切片的 lint", async () => {
 });
 
 describe("本地存储", () => {
-    test("配置文件不存在时用默认值：跟随当前模型、low", async () => {
-        const path = join(directory, "config", "config.json");
-        assert.deepEqual(await loadConfig(path), defaultConfig());
-        assert.deepEqual(defaultConfig().drafting.model, { mode: "follow_current" });
-        assert.equal(defaultConfig().drafting.reasoning, "low");
+    test("旧配置补齐 debug；开关可持久化且拒绝非布尔值", async () => {
+        const path = join(directory, "debug-config.json");
+        await writeFile(path, JSON.stringify({ drafting: { reasoning: "high" } }));
+        const config = await loadConfig(path);
+        assert.equal(config.drafting.debug, false);
+        config.drafting.debug = true;
+        await saveConfig(config, path);
+        assert.equal((await loadConfig(path)).drafting.debug, true);
+        config.drafting.debug = false;
+        await saveConfig(config, path);
+        assert.equal((await loadConfig(path)).drafting.debug, false);
+        await writeFile(path, JSON.stringify({ drafting: { debug: "false" } }));
+        await assert.rejects(loadConfig(path), /配置文件无效/);
     });
 
     test("配置保存后权限为 0600，缺失字段用默认值补齐，无效内容报错", async () => {

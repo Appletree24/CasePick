@@ -19,6 +19,7 @@ export const Config = Type.Object({
         reasoning: Type.Union(reasoningLevels.map((level) => Type.Literal(level))),
         max_output_tokens: Type.Integer({ minimum: 256, maximum: 200_000 }),
         timeout_s: Type.Integer({ minimum: 10, maximum: 3600 }),
+        debug: Type.Boolean(),
         // 已看过完整示例请求并同意外发的模型（provider/id）。
         consented: Type.Array(Type.String()),
     }, { additionalProperties: false }),
@@ -28,7 +29,7 @@ export type ModelChoice = Static<typeof ModelChoice>;
 export type Config = Static<typeof Config>;
 
 export function defaultConfig(): Config {
-    return { drafting: { model: { mode: "follow_current" }, reasoning: "low", max_output_tokens: 8000, timeout_s: 120, consented: [] } };
+    return { drafting: { model: { mode: "follow_current" }, reasoning: "low", max_output_tokens: 8000, timeout_s: 120, debug: false, consented: [] } };
 }
 
 export function configPath(): string {

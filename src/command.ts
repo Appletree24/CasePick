@@ -19,7 +19,7 @@ export const subcommands = [
   {
     name: "config",
     usage: "/casepick config",
-    description: "配置起草模型和思考等级（默认跟随当前模型、low）",
+    description: "配置起草模型、思考等级和 Debug 模式（默认跟随当前模型、low，Debug 关闭）",
   },
   {
     name: "help",

@@ -26,6 +26,11 @@
       "./src/extension.ts"
     ],
     "settings": {
+      "debug": {
+        "type": "boolean",
+        "default": false,
+        "description": "调试模型辅助：查看每次请求、原始回复、解析结果和核对诊断。仅在当前界面展示，不保存内容"
+      },
       "draftModel": {
         "type": "string",
         "default": "",

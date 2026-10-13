@@ -160,6 +160,7 @@ async function loadCompleteSimple(): Promise<CompleteSimple> {
 
 export interface ModelReply {
     text: string;
+    stopReason: AssistantMessage["stopReason"];
     usage?: { input: number; output: number };
 }
 
@@ -191,7 +192,7 @@ export async function callModel(ctx: ExtensionCommandContext, draft: DraftModel,
     const text = reply.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("");
     const usage = reply.usage ? { input: reply.usage.input, output: reply.usage.output } : undefined;
     await recordUsage({ at: new Date().toISOString(), model: draft.key, reasoning: draft.reasoning ?? null, purpose: "draft", input: usage?.input ?? null, output: usage?.output ?? null });
-    return { text, usage };
+    return { text, stopReason: reply.stopReason, usage };
 }
 
 // 只记录用量和模型，不记录内容和凭据。

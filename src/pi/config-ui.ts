@@ -98,12 +98,21 @@ export async function configure(ctx: ExtensionCommandContext): Promise<void> {
             `起草模型      ${describeModel(ctx, config)}`,
             `思考等级      ${config.drafting.reasoning}${reasoning.level !== config.drafting.reasoning && config.drafting.reasoning !== "off" ? `（实际 ${reasoning.level ?? "不传"}）` : ""}`,
             `已同意外发的模型 ${config.drafting.consented.length} 个（选择以清空）`,
+            `Debug 模式    ${(plugin.overrides.debug ?? config.drafting.debug) ? "开启" : "关闭"}${plugin.overrides.debug !== undefined ? "（以 Plugins 设置为准）" : ""}`,
             "完成",
         ]);
         if (!choice || choice === "完成") return;
         let changed = false;
         if (choice.startsWith("起草模型")) changed = await chooseModel(ctx, config);
         else if (choice.startsWith("思考等级")) changed = await chooseReasoning(ctx, config);
+        else if (choice.startsWith("Debug 模式")) {
+            if (plugin.overrides.debug !== undefined) {
+                ctx.ui.notify("debug 已由 OMP Settings → Plugins → casepick 覆盖，请在那里切换开关。", "info");
+            } else {
+                config.drafting.debug = !config.drafting.debug;
+                changed = true;
+            }
+        }
         else if (config.drafting.consented.length && await ctx.ui.confirm("清空外发同意", "之后向每个模型第一次发送前，都会重新展示完整示例请求。")) {
             config.drafting.consented = [];
             changed = true;

@@ -286,8 +286,10 @@ Pi 会话文件
 | `drafting.reasoning` | 思考等级：`off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max` | `low` |
 | `drafting.max_output_tokens` | 单次请求的输出上限 | 8000 |
 | `drafting.timeout_s` | 单次请求超时 | 120 |
+| `drafting.debug` | 是否展示模型辅助的请求、原始回复、解析和核对诊断 | `false` |
 
-- **OMP 的模型角色**：OMP 支持自定义模型角色。在 `~/.omp/agent/config.yml` 的 `modelTags` 里声明 `casepick` 角色后，可以在 `/model` 面板里给它可视化地指派模型。`follow_current` 模式下，CasePick 先用 `ctx.models.resolve("@casepick")` 找这个角色，找到就用它，找不到才跟随当前会话的模型；思考等级仍按 `drafting.reasoning`。Pi 没有模型角色，不受影响。- **OMP 设置 → Plugins 分区**：`package.json` 的 `omp.settings` 声明了 `draftModel`（文本：留空、`current`、`off`、`@角色` 或 `provider/id`）、`reasoning`（固定选项，默认 low）、`maxOutputTokens`、`timeoutSeconds`。用 `omp plugin link <CasePick 目录>` 装成插件后，这一项会出现在 Plugins 分区。运行时通过 OMP 的 `getPluginSettings` 读取；**填了值的项覆盖 `/casepick config` 的对应项**，留空的沿用 `/casepick config`。`/casepick config` 会列出哪些项被覆盖。Plugins 分区的选项只能写死，不能列出可用模型，所以 `draftModel` 是文本框；要下拉选模型，用上面的 `@casepick` 角色。
+- **OMP 的模型角色**：OMP 支持自定义模型角色。在 `~/.omp/agent/config.yml` 的 `modelTags` 里声明 `casepick` 角色后，可以在 `/model` 面板里给它可视化地指派模型。`follow_current` 模式下，CasePick 先用 `ctx.models.resolve("@casepick")` 找这个角色，找到就用它，找不到才跟随当前会话的模型；思考等级仍按 `drafting.reasoning`。Pi 没有模型角色，不受影响。
+- **OMP 设置 → Plugins 分区**：`package.json` 的 `omp.settings` 声明了 `draftModel`（文本：留空、`current`、`off`、`@角色` 或 `provider/id`）、`reasoning`（固定选项，默认 low）、`maxOutputTokens`、`timeoutSeconds` 和 `debug`（布尔开关，默认关闭）。用 `omp plugin link <CasePick 目录>` 装成插件后，这一项会出现在 Plugins 分区。通过宿主插件设置 API 读取并合并全局和项目覆盖（项目优先），每次操作重新读取。**显式设置的项覆盖 `/casepick config` 的对应项，包括 `debug: false`**，未设置的沿用 `/casepick config`。`/casepick config` 会列出哪些项被覆盖；debug 被覆盖时提示去 Plugins 切换。Plugins 分区不能列出可用模型，所以 `draftModel` 是文本框；要下拉选模型，用上面的 `@casepick` 角色。
 - **默认值的含义**：当前会话用的是 Astra，起草就用 Astra，思考等级 low。"跟随"在每次发起起草时取当前模型，不在配置里写死；用户中途切换了会话模型，下一次起草跟着变。
 - **思考等级的处理**：模型不支持思考时不传这个参数，界面显示"该模型不支持思考等级"；模型不支持所选等级时，取它支持的最接近的较低等级，没有较低的就取最接近的较高等级，并在界面上显示实际使用的等级。
 - **凭据**：发请求时用 `ctx.modelRegistry.getApiKeyAndHeaders(model)` 取凭据，不落盘；`hasConfiguredAuth(model)` 为假时不发送，提示用户先在宿主里配置。
@@ -295,6 +297,7 @@ Pi 会话文件
 - **跟随当前模型不等于同意外发。** 会话本来就在用这个模型，但起草会发出别的内容（比如其他会话的材料），所以照样按第 10 节确认。
 - 不自动重试，不自动换模型。模型返回的内容解析失败时，对应字段标为需要人工补。
 - **在哪里配置**：`/casepick config` 的"起草模型"一项（第 12 节）。每次起草前的一行确认里都显示实际使用的模型和思考等级，比如"将用 Astra · low 发送 5 个请求"。
+- **Debug 模式**：`drafting.debug` 或 Plugins 的 `debug` 开启时，每个模型辅助请求结束后展示可选面板：脱敏后的实际请求及命中、完整原始回复、解析结果、核对通过数量与拒绝原因；显示模型、实际思考等级、输出上限、超时、停止原因和用量。空列表明确标为“模型返回空候选列表”，不把它解释为“已确认没有问题”；调用或解析失败也能查看已取得的信息。仅在当前调用的界面展示，不持久化内容，不收集调用凭据，原始回复可能含敏感内容。关闭时不构建或展示调试面板，不增加模型调用，也不改变核对规则。
 
 **长程任务的模型辅助**（标注证据性质、提出候选切片、提出主案例归并）用同一套配置，见 [长程任务的案例切片](long-trajectory-slicing.md) 第 8 节。
 

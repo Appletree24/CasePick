@@ -6,6 +6,7 @@ import { after, test } from "node:test";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { defaultConfig } from "../src/store/config.ts";
 import { callModel, prepareRequests, resolveDraftModel } from "../src/pi/model.ts";
+import { parseOverrides } from "../src/pi/plugin-settings.ts";
 
 const directory = await mkdtemp(join(tmpdir(), "casepick-model-"));
 process.env.XDG_DATA_HOME = directory;
@@ -129,6 +130,14 @@ test("OMP 插件设置里填了值的项覆盖 /casepick config", async () => {
     const invalid = parseOverrides({ reasoning: "ultra", maxOutputTokens: 5, draftModel: 3 });
     assert.deepEqual(invalid.overrides, {});
     assert.equal(invalid.warnings.length, 3);
+});
+
+test("debug 显式关闭不能被当成未设置，字符串布尔值不能打开调试", () => {
+    assert.deepEqual(parseOverrides({ debug: false }), { overrides: { debug: false }, warnings: [] });
+    assert.deepEqual(parseOverrides({ debug: true }), { overrides: { debug: true }, warnings: [] });
+    const invalid = parseOverrides({ debug: "false" });
+    assert.deepEqual(invalid.overrides, {});
+    assert.equal(invalid.warnings.length, 1);
 });
 
 test("Pi 上读不到插件设置时不提示，OMP 上读不到时提示", async () => {
