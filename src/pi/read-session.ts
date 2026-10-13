@@ -26,12 +26,39 @@ export interface SessionSnapshot {
     tools: Task["tools"];
 }
 
+export function sessionKeyOf(sessionId: string): string {
+    return `session:${digestOf(sessionId).slice(7)}`;
+}
+
 // 读取只由 /casepick 主动触发。不调用 getEntries，不读取其他分支或改写会话。
 export async function readSession(ctx: ExtensionCommandContext, pi: ExtensionAPI): Promise<SessionSnapshot> {
     const sessionId = ctx.sessionManager.getSessionId();
     const leafId = ctx.sessionManager.getLeafId();
-    const sessionKey = `session:${digestOf(sessionId).slice(7)}`;
-    const branch = ctx.sessionManager.getBranch();
+    const snapshot = await snapshotFromBranch(ctx.sessionManager.getBranch(), sessionKeyOf(sessionId), currentTools(pi));
+    if (ctx.sessionManager.getSessionId() !== sessionId || ctx.sessionManager.getLeafId() !== leafId) {
+        throw new Error("读取期间会话发生了变化，请重新运行 /casepick。");
+    }
+    return snapshot;
+}
+
+// 工具定义只能取扫描时的当前配置，标为近似。
+export function currentTools(pi: ExtensionAPI): Task["tools"] {
+    const active = new Set(pi.getActiveTools());
+    const definitions = pi.getAllTools().filter((tool) => active.has(tool.name)).map((tool) => {
+        // Pi 使用普通 TypeBox 对象；OMP omptype schema 是可调用对象，必须先导出 JSON Schema。
+        const schema = tool.parameters as { toJsonSchema?: () => Record<string, unknown> };
+        const parameters = typeof schema.toJsonSchema === "function" ? schema.toJsonSchema() : schema;
+        return {
+            type: "function" as const,
+            function: { name: tool.name, description: tool.description, parameters: JSON.parse(JSON.stringify(parameters)) as Record<string, unknown> },
+        };
+    });
+    // 即使当前工具为空，也不能据此断言历史截止点没有工具。
+    return { source: "approximate", definitions };
+}
+
+// 把一条分支转换成快照。当前会话和用户选定的其他会话文件共用，读取上限一致。
+export async function snapshotFromBranch(branch: SessionEntry[], sessionKey: string, tools: Task["tools"]): Promise<SessionSnapshot> {
     let bytes = 0;
     let count = 0;
     const messages: RecordedEntry[] = [];
@@ -40,7 +67,7 @@ export async function readSession(ctx: ExtensionCommandContext, pi: ExtensionAPI
         bytes += Buffer.byteLength(JSON.stringify(entry), "utf8");
         if (entry.type === "message") count++;
         if (bytes > 20 * 1024 * 1024 || count > 2000) {
-            throw new Error("当前分支超过 2000 条消息或 20 MB 的读取上限，已停止读取；本次不会用不完整历史生成案例。");
+            throw new Error("分支超过 2000 条消息或 20 MB 的读取上限，已停止读取；本次不会用不完整历史生成案例。");
         }
         if (entry.type === "message") {
             const converted: HostMessage[] = convertToLlm([entry.message]);
@@ -55,25 +82,7 @@ export async function readSession(ctx: ExtensionCommandContext, pi: ExtensionAPI
         }
         if (index % 64 === 0) await setImmediate();
     }
-    if (ctx.sessionManager.getSessionId() !== sessionId || ctx.sessionManager.getLeafId() !== leafId) {
-        throw new Error("读取期间会话发生了变化，请重新运行 /casepick。");
-    }
-    const active = new Set(pi.getActiveTools());
-    const definitions = pi.getAllTools().filter((tool) => active.has(tool.name)).map((tool) => {
-        // Pi 使用普通 TypeBox 对象；OMP omptype schema 是可调用对象，必须先导出 JSON Schema。
-        const schema = tool.parameters as { toJsonSchema?: () => Record<string, unknown> };
-        const parameters = typeof schema.toJsonSchema === "function" ? schema.toJsonSchema() : schema;
-        return {
-            type: "function" as const,
-            function: { name: tool.name, description: tool.description, parameters: JSON.parse(JSON.stringify(parameters)) as Record<string, unknown> },
-        };
-    });
-    return {
-        sessionKey,
-        branch: structuredClone(branch), messages,
-        // 即使当前工具为空，也不能据此断言历史截止点没有工具。
-        tools: { source: "approximate", definitions },
-    };
+    return { sessionKey, branch: structuredClone(branch), messages, tools: structuredClone(tools) };
 }
 
 export function contextAt(snapshot: SessionSnapshot, cutoffEntry: string): CaseContext {

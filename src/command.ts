@@ -19,7 +19,7 @@ export const subcommands = [
   {
     name: "config",
     usage: "/casepick config",
-    description: "配置起草模型、脱敏规则、读取上限",
+    description: "配置起草模型和思考等级（默认跟随当前模型、low）",
   },
   {
     name: "help",
@@ -102,7 +102,7 @@ export function helpText(topic?: SubcommandName): string {
   return [
     "CasePick — 把 Agent 的犯错整理成评测案例",
     "  /casepick — 从当前会话选择回复，起草、审阅并保存案例",
-    "  支持本地格式规则和手动填写，不需要配置起草模型。",
+    "  支持本地格式规则、手动填写和模型起草；可以整理跨多个会话的长程问题。",
     ...subcommands.map(({ usage, description }) => `  ${usage} — ${description}`),
     "运行 /casepick help <子命令> 查看单个子命令的说明。",
   ].join("\n");

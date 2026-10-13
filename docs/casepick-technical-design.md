@@ -31,6 +31,8 @@ CasePick 要做的，就是把这件事的成本降到"扫一下、看一眼、�
 - 从 Pi / OMP 的会话历史里找出疑似犯错的地方（候选）。
 - 把候选整理成结构化案例：模型当时看到的输入、它该做到什么、它实际做了什么、依据是什么。
 - 为每条要求写评审标准（rubric），让下游的 LLM 评审（LLM-as-judge）或人工评审能稳定地判定；能程序化检查的要求额外附上约束。
+- 长程任务：把跨多轮、多个会话的同一个问题整理成主案例，从中切出可以独立评测的题（[长程任务的案例切片](long-trajectory-slicing.md)）。
+- 用模型辅助起草和切片，默认用当前会话的模型、思考等级 low；模型只提建议，程序核对，人确认。
 - 用本地检查保证案例质量，让用户在 Pi / OMP 里集中审阅和确认。
 - 本地保存，导出成 Detroit 评测集格式（`detroit.case/v2` 的 JSONL）。
 
@@ -50,6 +52,8 @@ CasePick 要做的，就是把这件事的成本降到"扫一下、看一眼、�
 | 出错消息 | 犯错的那条 assistant 消息（可以是文字回答，也可以是一次工具调用） |
 | 截止点 | 出错消息本身。它**之前**的内容构成输入，它和它之后的内容都不进输入 |
 | 原要求 | 截止点之前、用户或系统明确提出过、被出错消息违反的要求 |
+| 期望依据 | 一条要求从哪来：`instruction`（用户或系统原话）、`evidence`（截止点之前和出错回复矛盾的事实）、`norm`（规范表里的工作规范）。出处都必须在截止点之前 |
+| 主案例 | 长程任务里的一个待解决问题，可以跨多个会话，只在本地使用；从它切出的每道题是一条普通案例 |
 | 评审标准（rubric） | 每条原要求附带的判定说明：判定问题、通过和违反的标准、边界情况、例子。给下游评审模型或人看 |
 | 约束 | 可以由程序检查的期望，比如"必须是合法 JSON""不能调用 `write` 修改 `tests/` 下的文件"。可选，是 rubric 之外的补充 |
 | 评审方式 | `program`：至少一条约束能程序化判定；`rubric`：只能靠评审模型或人按 rubric 判定。两者都要有完整 rubric。只在界面上显示，不单独存字段，由要求里有没有约束推出 |
@@ -274,7 +278,24 @@ Pi 会话文件
 3. 本地逐项核对模型的输出（见④）。核对不过的字段直接清空，标成"需要人工补"，不会让模型重试，避免产生额外费用。
 4. 犯错类型不是"违反已有要求"的候选，草稿会标明，默认建议丢弃。
 
-起草模型独立配置，使用 OpenAI 兼容的 Chat Completions 接口，和 Pi 当前用的模型无关。配置项：`base_url`、`model`、`api_key_env`（填环境变量名，不存明文）、`max_tokens`、`timeout`。不自动重试，不自动换模型。
+**起草模型怎么选。** 起草模型从宿主（Pi / OMP）已经配置好的模型里选，凭据也由宿主提供，CasePick 不保存任何密钥。
+
+| 配置 | 取值 | 默认 |
+| --- | --- | --- |
+| `drafting.model` | `{ "mode": "follow_current" }`：跟随当前会话的模型；`{ "mode": "fixed", "provider", "id" }`：固定某个模型；`{ "mode": "off" }`：不用模型，只手填和规则起草 | `follow_current` |
+| `drafting.reasoning` | 思考等级：`off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max` | `low` |
+| `drafting.max_output_tokens` | 单次请求的输出上限 | 8000 |
+| `drafting.timeout_s` | 单次请求超时 | 120 |
+
+- **默认值的含义**：当前会话用的是 Astra，起草就用 Astra，思考等级 low。"跟随"在每次发起起草时取当前模型，不在配置里写死；用户中途切换了会话模型，下一次起草跟着变。
+- **思考等级的处理**：模型不支持思考时不传这个参数，界面显示"该模型不支持思考等级"；模型不支持所选等级时，取它支持的最接近的较低等级，没有较低的就取最接近的较高等级，并在界面上显示实际使用的等级。
+- **凭据**：发请求时用 `ctx.modelRegistry.getApiKeyAndHeaders(model)` 取凭据，不落盘；`hasConfiguredAuth(model)` 为假时不发送，提示用户先在宿主里配置。
+- **怎么调用**：用宿主提供的 `completeSimple(model, context, { apiKey, headers, reasoning, maxTokens, signal })`，不传工具，因为起草模型不需要执行任何操作。不调用 `pi.setModel` / `setThinkingLevel`，不影响当前会话的模型和思考等级，也不往会话里插消息。
+- **跟随当前模型不等于同意外发。** 会话本来就在用这个模型，但起草会发出别的内容（比如其他会话的材料），所以照样按第 10 节确认。
+- 不自动重试，不自动换模型。模型返回的内容解析失败时，对应字段标为需要人工补。
+- **在哪里配置**：`/casepick config` 的"起草模型"一项（第 12 节）。每次起草前的一行确认里都显示实际使用的模型和思考等级，比如"将用 Astra · low 发送 5 个请求"。
+
+**长程任务的模型辅助**（标注证据性质、提出候选切片、提出主案例归并）用同一套配置，见 [长程任务的案例切片](long-trajectory-slicing.md) 第 8 节。
 
 ### ④ 本地检查（lint）
 
@@ -290,7 +311,8 @@ Pi 会话文件
 | 每条原要求都有 rubric，`question`、`pass`、`fail` 非空 | 阻止确认 |
 | 每个 rubric 至少有一个 `origin: observed` 的 `fail` 例子 | 阻止确认 |
 | `origin: observed` 的例子确实出现在原出错输出里 | 阻止确认：这条例子被清空 |
-| rubric 里出现了 `diagnostic.followup` 中较长的原文片段（默认 ≥ 12 个字符） | 警告：可能用了截止点之后的信息，请确认 |
+| 要求和 rubric 里有一段只在截止点之后出现、截止点之前的输入和原出错输出里都没有的连续文字（默认 12 个字符，中日韩文字为主时 8 个字）。截止点之后包括同一会话的后续全部消息，长程切片还包括主案例里更晚的证据和最终结论 | 阻止确认 |
+| 要求的期望依据（`x-casepick.requirements`）对应不到要求、规范版本不一致，或 `evidence` / `norm` 依据引用了助手自己的回复 | 阻止确认 |
 | rubric 各字段超出长度建议（`question` 200 字，其他 500 字） | 警告：评审标准过长，容易判不稳 |
 | 每条约束套在原出错输出上都判定为"违反" | 该约束标红；没有任何有效约束时，评审方式为 `rubric` |
 | 脱敏没有改动被引用的原文和 `observed` 例子 | 阻止确认，提示用户处理 |
@@ -340,7 +362,8 @@ Pi 的消息格式和 OpenAI messages 不同，转换规则集中在一个模块
 数据离开本机只有两种情况，都由用户主动触发：
 
 **发给起草模型。**
-- 第一次向某个端点发送前，展示一份完整的示例请求并要求确认。之后只要端点不变，每批只需一行确认（"将向 api.deepseek.com 发送 5 个请求，约 30k tokens，确认？"），完整请求随时可以展开查看。
+- 第一次向某个模型（按 provider 加模型 ID 区分）发送前，展示一份完整的示例请求并要求确认。之后只要模型不变，每批只需一行确认（"将用 Astra · low 发送 5 个请求，约 30k tokens，确认？"），完整请求随时可以展开查看。跟随当前模型时同样适用。
+- 用的是订阅制或 OAuth 登录的模型时，提示起草会占用同一份额度。
 - 发送前做本地脱敏：API key、token、私钥、`.env` 内容、本机用户目录路径（替换为 `~`）。脱敏规则可以配置。
 - 记录每次请求的 token 用量（以接口返回为准，拿不到就显示未知），不估算金额。
 - 用户可以随时取消。还没发出的请求停止发送，已经发出的尽力中断，但无法保证服务方不计费，这一点会明确告诉用户。
@@ -357,9 +380,11 @@ Pi 的消息格式和 OpenAI messages 不同，转换规则集中在一个模块
 
 ```
 casepick/
-  config.json       起草模型配置（不含密钥明文）、脱敏规则、读取上限
+  config.json       起草模型选择和思考等级（不含任何密钥）、脱敏规则、读取上限
+  issues.jsonl      长程任务的主案例和证据时间线，只在本地使用，不导出
   cases.jsonl       所有草稿和案例版本，一行一个，只追加
   marks.jsonl       书签：会话 ID + entry ID + 时间，不含内容
+  usage.jsonl       起草模型的调用记录：时间、模型、思考等级、token 用量，不含内容
   exports.jsonl     导出记录：时间、路径、包含的案例 ID、revision 和两个摘要、文件摘要
 ```
 
@@ -391,15 +416,31 @@ casepick/
 | `/casepick mark [备注]` | 在当前位置留一个书签 |
 | `/casepick cases` | 浏览、编辑、删除已有案例 |
 | `/casepick export` | 导出 |
-| `/casepick config` | 配置起草模型、脱敏规则、读取上限 |
+| `/casepick config` | 配置起草模型和思考等级、脱敏规则、读取上限 |
+
+`/casepick config` 的界面：
+
+```
+CasePick 配置
+  起草模型      跟随当前模型（现在是 Astra）
+  思考等级      low
+  脱敏规则      默认 5 条
+  读取上限      2000 条消息 / 20 MB
+```
+
+- 选"起草模型"后列出：跟随当前模型（默认）、宿主里所有已配置凭据的模型（`ctx.modelRegistry.getAvailable()`，按 provider 分组）、不使用模型。
+- 选"思考等级"后只列出所选模型支持的等级，默认 low。跟随当前模型时，按当前模型的能力列出。
+- 保存到 `config.json`，文件权限 0600。
 
 状态栏只显示进行中的操作和待审数量，不弹逐条通知。非交互模式（比如 print 模式）下拒绝执行，并说明原因。
 
 命令解析在 `src/command.ts`，`src/extension.ts` 负责注册和分发。
 
-**当前实现（2026-10-13）：** `/casepick` 已打通本地生成流程：读取当前分支 → 选择候选或手动选择任意历史回复 → 规则起草 / 手动补充要求与 rubric → lint → 审阅确认 → 追加保存 `cases.jsonl`。不依赖起草模型，不向会话插入消息，不运行工具。`mark`、`cases`、`export`、`config` 仍是待实现入口。
+**当前实现（2026-10-13，第二次更新）：** 新增起草模型配置（`/casepick config`，默认跟随当前模型、思考等级 low）、审阅时"用模型起草要求"、三种期望依据，以及"整理长程问题"入口（[长程任务的案例切片](long-trajectory-slicing.md)）。调用模型时，Pi 上用 `modelRegistry.streamSimple`，由宿主处理请求时的认证；宿主没有这个方法时（OMP），用 `getApiKeyAndHeaders` 加 `@earendil-works/pi-ai` 的 `completeSimple`。`mark`、`cases`、`export` 仍是待实现入口。
 
-- 读取使用 Pi 1.1.0 的 `getBranch()`；选定回复后用 `buildSessionProjection(branch, cutoff.parentId)` 和 `convertToLlm()` 重建当时输入，保留压缩摘要、分支摘要及截止点之前的上下文编辑。不会把后来发生的压缩或编辑回溯应用到旧输入。超过 2000 条消息 / 20 MB 时停止并明确提示，不用截断历史生成案例。
+**当前实现（2026-10-13，第一次）：** `/casepick` 已打通本地生成流程：读取当前分支 → 选择候选或手动选择任意历史回复 → 规则起草 / 手动补充要求与 rubric → lint → 审阅确认 → 追加保存 `cases.jsonl`。不依赖起草模型，不向会话插入消息，不运行工具。`mark`、`cases`、`export`、`config` 仍是待实现入口。
+
+- 读取使用宿主的 `getBranch()`；选定回复后用 `buildSessionContext(branch, cutoff.parentId)` 和 `convertToLlm()` 重建当时输入，保留压缩摘要、分支摘要及截止点之前的上下文编辑。不会把后来发生的压缩或编辑回溯应用到旧输入。超过 2000 条消息 / 20 MB 时停止并明确提示，不用截断历史生成案例。
 - 本地信号包含用户纠正、JSON / 代码块格式冲突、工具报错后用户介入和异常中止。信号不等于错误结论；规则只对最近一条用户消息里的明确 JSON / 代码块要求预填草稿，选中后按实际输入重新计算出处。所有历史 assistant 回复都可手动选择。
 - 审阅支持编辑标题、添加 / 编辑 / 删除要求、选择程序约束、填写 rubric 和环境依赖、查看完整输入与检查结果。输入及原出错输出保持快照原文；引用和反例必须能够逐字核对。返回候选后，本次扫描内已编辑的草稿仍保留；退出扫描后未确认草稿丢弃，暂不提供草稿持久化或已有案例版本管理。
 - 确认时展示路径和大小，重新计算摘要并运行 `confirm` lint，要求错误清零且截止点核对通过，警告需由用户接受。保存位置为 `$XDG_DATA_HOME/casepick/cases.jsonl`，未配置时为 `~/.local/share/casepick/cases.jsonl`；目录权限 0700，文件权限 0600，追加写入使用独占锁避免多窗口记录交错。
@@ -414,12 +455,22 @@ src/
   pi/
     read-session.ts     读取当前分支的历史
     ui.ts               审阅界面、确认框、状态栏
+    sources.ts          读取用户选定的其他会话，custom_message 回溯到原会话
+    model.ts            解析起草模型和思考等级、外发确认、调用、用量记录
+    assist-run.ts       模型辅助的执行流程
+    slice.ts            从任意会话的截止点生成草稿（单条回复和长程切片共用）
+    issues-ui.ts        "整理长程问题"界面
+    config-ui.ts        /casepick config 界面
   core/                 不依赖 Pi，可以单独测试
     messages.ts         宿主无关的消息模型
     convert.ts          转换为 OpenAI messages（第 9 节）
     candidates.ts       候选规则（第 8 节②）
     draft-rule.ts       规则起草
     draft-model.ts      模型起草和结果核对
+    issues.ts           主案例、证据时间线、切片去重（长程切片）
+    norms.ts            规范表 casepick.norms/1 和默认 rubric 模板
+    assist.ts           模型辅助的提示词、回复解析和逐条核对
+    reasoning.ts        思考等级的解析和降级
     checks.ts           约束类型及判定（第 7 节）
     digest.ts           RFC 8785 规范化和 task / scoring 摘要（协议 §4）
     rubric.ts           rubric 模板（每种约束一份默认模板、手填空模板）和结构检查
@@ -427,6 +478,8 @@ src/
     redact.ts           脱敏
   store/
     cases.ts            cases.jsonl 读写、版本、删除
+    issues.ts           issues.jsonl 读写
+    config.ts           config.json 读写
     marks.ts
   export/
     export.ts           Detroit 内联打包、只导出评分、Inspect 格式
@@ -436,7 +489,7 @@ scripts/
   smoke.ts              冒烟脚本，不属于插件（第 14 节）
 ```
 
-技术选型：TypeScript strict 模式；TypeBox 定义 schema，运行时用 TypeBox 自带的校验（不引入 Ajv 运行时依赖）；测试里用 Ajv 跑 Detroit 的 JSON Schema，核对 CasePick 的产出 Detroit 一定接受；Node 自带的 `node:test` 写单元测试（Node 22.18+ 直接运行 .ts，不引入测试依赖）；起草模型请求用原生 `fetch`；不引入数据库。
+技术选型：TypeScript strict 模式；TypeBox 定义 schema，运行时用 TypeBox 自带的校验（不引入 Ajv 运行时依赖）；测试里用 Ajv 跑 Detroit 的 JSON Schema，核对 CasePick 的产出 Detroit 一定接受；Node 自带的 `node:test` 写单元测试（Node 22.18+ 直接运行 .ts，不引入测试依赖）；起草模型请求用宿主的模型注册表和 `completeSimple`，不自己管理端点和密钥；不引入数据库。
 
 `core/` 不导入任何 Pi 的东西。以后适配 OMP，只需要新增一个 `omp/` 目录。
 
@@ -472,16 +525,20 @@ scripts/
 
 ### 阶段 2：模型起草
 
-起草模型配置、脱敏、外发确认、结构化输出（含 rubric）、核对、用量记录、取消。
+起草模型配置（`/casepick config`，默认跟随当前模型、思考等级 low）、脱敏、外发确认、结构化输出（含 rubric）、核对、用量记录、取消。
 
 **完成标准：**
 - 第 15 节场景 6、7、13 通过。
 - 用 20 个真实候选测试，记录模型草稿不经修改直接确认的比例、rubric 不经修改直接确认的比例，作为后续改进的基线。
 - 这 20 条用冒烟脚本跑 rubric 自检，记录评审模型稳定判"违反"的比例。
 
-### 阶段 3：补全
+### 阶段 3：长程任务切片
 
-书签、`--format inspect`、OMP 适配。
+主案例、证据时间线、跨会话读取、三种期望依据、规范表和新增 lint，先人工版再加模型辅助。详见 [长程任务的案例切片](long-trajectory-slicing.md) 第 12 节。
+
+### 阶段 4：补全
+
+书签、`--format inspect`。
 
 ## 15. 必须通过的场景
 
@@ -528,6 +585,8 @@ scripts/
 
 ## 18. 待确认的决策
 
+已确认（2026-10-13）：起草模型从宿主已配置的模型里选，默认跟随当前会话的模型、思考等级 low，可以在 `/casepick config` 里改；长程任务按 [长程任务的案例切片](long-trajectory-slicing.md) 处理。
+
 已确认（2026-10-12）：案例格式直接采用 Detroit 定义的 `detroit.case/v2`；评分可以和题目分开分发（Detroit 09 D10、D11）；导出时 `purpose` 默认 `improvement`，因为日常犯错攒下的案例很可能会被拿去调提示词，错把改进数据当验证数据会高估泛化能力。
 
 以下几点本文按左列的方案写，如果不同意需要调整：
@@ -540,7 +599,13 @@ scripts/
 
 ## 19. 与上一版相比的变化
 
-**2026-10-12 第二版（本版）：**
+**2026-10-13：**
+
+- **起草模型改为从宿主的模型注册表里选**，默认跟随当前会话的模型、思考等级 low，凭据由宿主提供；去掉原来的 `base_url`、`api_key_env` 独立端点配置。`/casepick config` 提供模型和思考等级的选择界面。
+- **新增长程任务切片**（[长程任务的案例切片](long-trajectory-slicing.md)）：主案例和证据时间线、三种期望依据、规范表、防后见之明检查。对外格式不变，新增信息放在 `x-casepick`。
+- 代码结构新增 `core/issues.ts`、`core/norms.ts`、`pi/sources.ts`、`pi/model.ts`、`pi/config-ui.ts`、`store/issues.ts`、`store/config.ts`；分期新增阶段 3（长程任务切片），原阶段 3 改为阶段 4。
+
+**2026-10-12 第二版：**
 
 - **案例格式改为 Detroit 评测集格式 `detroit.case/v2`**，不再定义 `casepick.case/v1`。字段映射见第 7 节；`input` → `task`，`expected` → `scoring`，`observed` → `diagnostic`。
 - **去掉 `quality` / `judge_mode` 和单一 `hash`**，改为 `digests.task` 和 `digests.scoring` 两个摘要。

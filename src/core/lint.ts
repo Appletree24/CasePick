@@ -10,6 +10,7 @@ import {
 } from "../schema/case.ts";
 import { evaluateCheck, type CheckResult } from "./checks.ts";
 import { canonicalize, scoringDigest, taskDigest } from "./digest.ts";
+import { normsVersion } from "./norms.ts";
 import { observedTexts, rubricErrors } from "./rubric.ts";
 
 export interface LintIssue {
@@ -29,6 +30,8 @@ export interface LintCheckResult extends CheckResult {
 export interface LintOptions {
     stage?: "draft" | "confirm" | "export";
     followupMinLength?: number;
+    // 截止点之后才出现的其他内容（同一主案例里更晚的证据、最终结论），与 followup 一起做防后见之明检查。
+    laterTexts?: readonly string[];
     // 从当前分支独立取得的快照，包含截止点消息本身。
     // 消息已经过格式转换、压缩上下文选择和与案例一致的脱敏，不能从待检查案例反向构造。
     source?: {
@@ -129,11 +132,20 @@ function rubricFields(rubric: Rubric): [string, string][] {
     ];
 }
 
-function sharedFragment(text: string, sources: readonly string[], minimum: number): string | undefined {
+// 找出只在截止点之后出现、在截止点之前的输入和原出错输出里都没有的片段。
+// 截止点之前也出现过的片段（比如重复引用原要求）不算后见之明。
+// 中日韩文字信息密度高，以它们为主的片段用 2/3 的长度阈值（默认 12 → 8 个字）。
+const cjk = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+
+function laterOnlyFragment(text: string, later: readonly string[], allowed: readonly string[], minimum: number): string | undefined {
     const characters = Array.from(text);
-    for (let i = 0; i + minimum <= characters.length; i++) {
-        const fragment = characters.slice(i, i + minimum).join("");
-        if (fragment.trim() && sources.some((source) => source.includes(fragment))) return fragment;
+    const cjkMinimum = Math.max(1, Math.ceil(minimum * 2 / 3));
+    for (let i = 0; i < characters.length; i++) {
+        const short = characters.slice(i, i + cjkMinimum);
+        const length = short.length === cjkMinimum && short.filter((character) => cjk.test(character)).length * 2 >= cjkMinimum ? cjkMinimum : minimum;
+        if (i + length > characters.length) continue;
+        const fragment = characters.slice(i, i + length).join("");
+        if (fragment.trim() && later.some((source) => source.includes(fragment)) && !allowed.some((source) => source.includes(fragment))) return fragment;
     }
     return undefined;
 }
@@ -197,6 +209,13 @@ export function lintCase(value: unknown, options: LintOptions = {}): LintResult 
     const originalObserved = options.beforeRedaction ? observedTexts(options.beforeRedaction.observed) : undefined;
     const followup = (doc.diagnostic.followup ?? []).flatMap((message) =>
         message.role === "assistant" ? observedTexts(message) : [message.content]);
+    const later = [...followup, ...(options.laterTexts ?? [])];
+    const allowed = [
+        ...(doc.task.system.content === null ? [] : [doc.task.system.content]),
+        ...doc.task.messages.flatMap((message) => message.role === "assistant" ? observedTexts(message) : [message.content]),
+        ...observed,
+    ];
+    const bases = doc.extensions?.["x-casepick"]?.requirements ?? {};
     if (doc.provenance?.transforms?.some((transform) => transform.type === "redact") && !options.beforeRedaction) {
         add(stage === "confirm" ? "error" : "warning", "redaction_unverified", "/provenance/transforms",
             "没有脱敏前快照，无法核对脱敏是否改动引文或 observed 例子；确认前必须提供 beforeRedaction");
@@ -236,8 +255,20 @@ export function lintCase(value: unknown, options: LintOptions = {}): LintResult 
         for (const [field, text] of rubricFields(requirement.rubric)) {
             const limit = field === "question" ? 200 : 500;
             if (Array.from(text).length > limit) add("warning", "rubric_too_long", `${rubricPath}/${field}`, `建议不超过 ${limit} 个字符，评审标准过长容易判不稳`);
-            const fragment = sharedFragment(text, followup, minimum);
-            if (fragment !== undefined) add("warning", "rubric_followup_overlap", `${rubricPath}/${field}`, `与截止点之后的内容存在至少 ${minimum} 个连续字符重合：${JSON.stringify(fragment)}；请确认没有引入后来的要求`);
+        }
+        for (const [fieldPath, text] of [[`${path}/text`, requirement.text], ...rubricFields(requirement.rubric).map(([field, value]) => [`${rubricPath}/${field}`, value])]) {
+            const fragment = laterOnlyFragment(text, later, allowed, minimum);
+            if (fragment !== undefined) add("error", "rubric_hindsight", fieldPath, `有一段连续文字只在截止点之后出现：${JSON.stringify(fragment)}；要求和评审标准只能依据截止点之前的内容`);
+        }
+        const basis = bases[requirement.id];
+        if (basis && basis.basis !== "instruction" && source?.role === "assistant") {
+            add("error", "basis_source_assistant", `${path}/source/message`, "evidence / norm 依据的出处应是用户陈述或工具输出，不能是助手自己的回复");
+        }
+        if (basis?.basis === "norm" && basis.norms_version !== normsVersion) {
+            add("error", "norms_version_unknown", `/extensions/x-casepick/requirements/${requirement.id}/norms_version`, `规范表版本 ${basis.norms_version} 与当前版本 ${normsVersion} 不一致`);
+        }
+        if ((!basis || basis.basis === "instruction") && source && source.role !== "user") {
+            add("warning", "instruction_source_not_user", `${path}/source/message`, "instruction 依据通常引用用户原话；引用工具输出时请把依据改为 evidence");
         }
         (requirement.checks ?? []).forEach((check, checkIndex) => {
             const checkPath = `${path}/checks/${checkIndex}`;
@@ -247,6 +278,9 @@ export function lintCase(value: unknown, options: LintOptions = {}): LintResult 
                 `约束对原出错输出判为 ${result.verdict}，不能证明这次违反：${result.reason}`);
         });
     });
+    for (const id of Object.keys(bases)) {
+        if (!ids.has(id)) add("error", "basis_unknown_requirement", `/extensions/x-casepick/requirements/${id}`, `依据记录没有对应的要求：${id}`);
+    }
     const violated = new Set<string>();
     doc.diagnostic.violates.forEach((id, index) => {
         if (!ids.has(id)) add("error", "violation_unknown", `/diagnostic/violates/${index}`, `没有对应的原要求：${id}`);

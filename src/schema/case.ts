@@ -219,12 +219,28 @@ export const Provenance = Strict({
     transforms: Type.Optional(Type.Array(Transform)),
 });
 
+// 每条要求的期望依据（docs/long-trajectory-slicing.md §5、§7）。
+// 没有记录的要求按 instruction 处理，兼容此前保存的案例。
+export const RequirementBasis = Type.Union([
+    Strict({ basis: Type.Literal("instruction") }),
+    Strict({ basis: Type.Literal("evidence"), refuted_by: Type.Optional(Type.Array(NonEmpty)) }),
+    Strict({
+        basis: Type.Literal("norm"),
+        norm: Type.Union([Type.Literal("N1"), Type.Literal("N2"), Type.Literal("N3"), Type.Literal("N4")]),
+        norms_version: Type.Integer({ minimum: 1 }),
+        refuted_by: Type.Optional(Type.Array(NonEmpty)),
+    }),
+]);
+
 // CasePick 私有信息，Detroit 原样保留、可以忽略。
 export const CasepickExtension = Strict({
     cutoff_entry: NonEmpty,
     host_version: Type.Optional(NonEmpty),
     rubric_edited: Type.Optional(Type.Boolean()),
     confirmed_at: Type.Optional(Timestamp),
+    // 长程切片所属的主案例；同时作为 provenance.source.group_key。
+    issue_id: Type.Optional(Type.String({ pattern: "^issue_[A-Za-z0-9-]+$" })),
+    requirements: Type.Optional(Type.Record(Type.String({ pattern: "^[A-Za-z0-9_-]+$" }), RequirementBasis)),
 });
 
 const Extensions = Strict({ "x-casepick": Type.Optional(CasepickExtension) });
@@ -293,6 +309,8 @@ export type Requirement = Static<typeof Requirement>;
 export type InlineScoring = Static<typeof InlineScoring>;
 export type Diagnostic = Static<typeof Diagnostic>;
 export type Provenance = Static<typeof Provenance>;
+export type RequirementBasis = Static<typeof RequirementBasis>;
+export type CasepickExtension = Static<typeof CasepickExtension>;
 export type CaseDocument = Static<typeof CaseDocument>;
 export type ScoringDocument = Static<typeof ScoringDocument>;
 export type DatasetDocument = Static<typeof DatasetDocument>;

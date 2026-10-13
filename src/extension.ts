@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { readFileSync } from "node:fs";
+import { configure } from "./pi/config-ui.ts";
 import { generateCases } from "./pi/generate.ts";
 import {
     type Action,
@@ -40,7 +41,7 @@ export default function casepick(pi: ExtensionAPI): void {
         mark: notImplemented("书签"),
         cases: notImplemented("案例管理"),
         export: notImplemented("导出"),
-        config: notImplemented("配置"),
+        config: async (_args, ctx) => configure(ctx),
     };
     pi.registerCommand("casepick", {
         description: "把 Agent 的犯错整理成评测案例",
