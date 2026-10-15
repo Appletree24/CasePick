@@ -3,10 +3,11 @@
 > 版本 2026-10-12（第二版）。案例格式改为直接采用 Detroit 评测集格式 `detroit.case/v2`；此前当天的版本加入了评审标准（rubric）。更早的版本见 git 历史。
 > `casepick-plan.md` 中的自动采集和 Harness 内评测已经放弃，以本文为准。
 > 2026-10-13 实现补充：同一入口支持 Pi 和 OMP。会话重建统一调用宿主的 `buildSessionContext`，截止点为原出错回复的父节点；不依赖 Pi 独有的 `buildSessionProjection`。OMP callable 工具 schema 通过 `toJsonSchema()` 导出；案例自身的 schema 构造和校验固定使用本地 TypeBox 子路径，避免宿主兼容层替换裸包入口后混用两套 schema。OMP 基础提示与 developer 指令合并为 approximate 的 `task.system`，不改变 Detroit v2 的消息角色集合。
+> DSH 适配补充：保留 Pi/OMP 原入口，新增 DSH 原生 Host 与 Web Client 入口。案例生成、长程问题、核对与存储共用；各宿主自己的历史重建、模型调用、设置与交互协议见第 13 节。
 
 ## 1. 一句话
 
-CasePick 是一个 Pi / OMP 插件：**把你在日常使用中遇到的 Agent 犯错，整理成可以直接拿去评测的高质量案例文件。**
+CasePick 是一个 Pi / OMP / DSH 插件：**把你在日常使用中遇到的 Agent 犯错，整理成可以直接拿去评测的高质量案例文件。**
 
 它只负责"生产数据"。拿这些案例去跑模型、打分、做对比，是下游评测平台 [Detroit](https://github.com/Appletree24/Detroit) 的事，插件不做。案例格式以 Detroit 定义的评测集格式协议为准（Detroit `docs/10-dataset-format.md`），CasePick 直接产出这种格式。
 
@@ -28,12 +29,12 @@ CasePick 要做的，就是把这件事的成本降到"扫一下、看一眼、�
 
 **做：**
 
-- 从 Pi / OMP 的会话历史里找出疑似犯错的地方（候选）。
+- 从 Pi / OMP / DSH 的会话历史里找出疑似犯错的地方（候选）。
 - 把候选整理成结构化案例：模型当时看到的输入、它该做到什么、它实际做了什么、依据是什么。
 - 为每条要求写评审标准（rubric），让下游的 LLM 评审（LLM-as-judge）或人工评审能稳定地判定；能程序化检查的要求额外附上约束。
 - 长程任务：把跨多轮、多个会话的同一个问题整理成主案例，从中切出可以独立评测的题（[长程任务的案例切片](long-trajectory-slicing.md)）。
 - 用模型辅助起草和切片，默认用当前会话的模型、思考等级 low；模型只提建议，程序核对，人确认。
-- 用本地检查保证案例质量，让用户在 Pi / OMP 里集中审阅和确认。
+- 用本地检查保证案例质量，让用户在当前宿主里集中审阅和确认。
 - 本地保存，导出成 Detroit 评测集格式（`detroit.case/v2` 的 JSONL）。
 
 **不做：**
@@ -148,7 +149,7 @@ CasePick 不再定义自己的交换格式，案例直接采用 Detroit 评测�
 | `provenance.producer` | `{ "name": "casepick", "version", "method" }`，`method` 为 `model:<模型>`、`rule:<规则>@<版本>` 或 `manual` |
 | `provenance.limitations` / `transforms` | 系统提示缺失、工具定义近似、脱敏、截断、丢弃 thinking、省略图片等 |
 | `digests` | 按协议 §4 计算 `task` 和 `scoring` 两个摘要 |
-| `extensions["x-casepick"]` | CasePick 私有信息：`cutoff_entry`（Pi entry ID）、`host_version`、`rubric_edited`、`confirmed_at` 等，Detroit 原样保留、可以忽略 |
+| `extensions["x-casepick"]` | CasePick 私有信息：`cutoff_entry`（宿主 entry ID；DSH 为 `dsh:<seq>`）、`host_version`、`rubric_edited`、`confirmed_at` 等，Detroit 原样保留、可以忽略 |
 
 几点说明：
 
@@ -442,6 +443,8 @@ CasePick 配置
 
 命令解析在 `src/command.ts`，`src/extension.ts` 负责注册和分发。
 
+**DSH 当前实现：** 原生 `/casepick`、`/casepick config`、Web 弹窗审阅、跨会话主案例、模型找证据/提议切片/起草要求及 Debug 已接入同一整理流程。源会话只读；DSH 执行命令本身可追加 `command/run` / `command/done`，不能将“不插入对话消息”表述为“原始日志绝不新增事件”。模型内容准备仍沿用现有分段策略，本次不实现长会话上下文预算设计。
+
 **当前实现（2026-10-13，第二次更新）：** 新增起草模型配置（`/casepick config`，默认跟随当前模型、思考等级 low）、审阅时"用模型起草要求"、三种期望依据，以及"整理长程问题"入口（[长程任务的案例切片](long-trajectory-slicing.md)）。调用模型时，Pi 上用 `modelRegistry.streamSimple`，由宿主处理请求时的认证；宿主没有这个方法时（OMP），用 `getApiKeyAndHeaders` 加 `@earendil-works/pi-ai` 的 `completeSimple`。`mark`、`cases`、`export` 仍是待实现入口。
 
 **当前实现（2026-10-13，第一次）：** `/casepick` 已打通本地生成流程：读取当前分支 → 选择候选或手动选择任意历史回复 → 规则起草 / 手动补充要求与 rubric → lint → 审阅确认 → 追加保存 `cases.jsonl`。不依赖起草模型，不向会话插入消息，不运行工具。`mark`、`cases`、`export`、`config` 仍是待实现入口。
@@ -456,8 +459,16 @@ CasePick 配置
 
 ```
 src/
-  extension.ts          Pi 入口：注册命令、分发到各处理函数
+  extension.ts          Pi/OMP 入口：注册命令、绑定宿主 SDK、分发处理
   command.ts            参数解析、帮助、补全（纯函数）
+  host.ts               共用 UI、模型目录、会话来源与设置能力
+  dsh/
+    index.ts            原生命令、设置、已认证交互路由与运行生命周期
+    client.tsx          Web slash action、审阅弹窗与插件设置卡片
+    protocol.ts         浏览器/Host 的对话及状态协议
+    ui-bridge.ts        WorkflowUI 到可取消交互状态机的适配
+    sessions.ts         原生事件转换、历史截止点恢复和跨会话只读查询
+    models.ts           原生模型目录、独立请求流与用量转换
   pi/
     read-session.ts     读取当前分支的历史
     ui.ts               审阅界面、确认框、状态栏
@@ -493,11 +504,22 @@ src/
     case.ts             TypeBox schema，类型由它推导；和 Detroit schemas/detroit-v2.schema.json 对齐，测试里用后者校验产出
 scripts/
   smoke.ts              冒烟脚本，不属于插件（第 14 节）
+  build-dsh.mjs         DSH Host ESM 与浏览器 module-table 工厂构建
 ```
 
 技术选型：TypeScript strict 模式；TypeBox 定义 schema，运行时用 TypeBox 自带的校验（不引入 Ajv 运行时依赖）；测试里用 Ajv 跑 Detroit 的 JSON Schema，核对 CasePick 的产出 Detroit 一定接受；Node 自带的 `node:test` 写单元测试（Node 22.18+ 直接运行 .ts，不引入测试依赖）；起草模型请求用宿主的模型注册表和 `completeSimple`，不自己管理端点和密钥；不引入数据库。
 
-`core/` 不导入任何 Pi 的东西。以后适配 OMP，只需要新增一个 `omp/` 目录。
+`core/`、`store/` 与案例协议不因宿主增加而分叉。Pi/OMP 的 SDK 只在 `src/extension.ts` 中静态绑定，通过 `WorkflowContext.piSdk` 注入；不要在共用流程里动态导入 SDK，这会绕过 OMP 对 Pi 包名的兼容解析。DSH 提供自己的 `sources`、模型目录和 `pluginSettings`，原生运行路径不需要加载 Pi SDK。
+
+### DSH 适配契约
+
+- **发行与入口**：基线为 DSH CLI `0.1.5-rc.1` / SDK `0.1.5-rc.2`。`package.json` 保留 `pi.extensions` / `omp.extensions`，另声明 DSH bundle patch、Host 主入口及 Web Client 入口。浏览器产物是 DSH `__ModuleLoader__` 的模块工厂，不是独立 ESM 页面；React 与 Modal 由宿主提供。安装命令见 README。
+- **历史截止点**：`SessionSnapshot.contextAt()` 由宿主实现。Pi/OMP 用 `buildSessionContext(branch, parentId)`；DSH 冻结原生事件快照，在所选 assistant 事件之前的前缀上调用 `foldSurface` 与 `foldRequestHeader`，不能按当前投影倒推旧上下文。`tool/result` 转为可移植 `tool` 消息；工具调用参数保留原始 JSON 字符串。历史 request header 没有 tools 就表示没有工具，不套用当前工具配置。供应商私有指令及临时中间件改写仍不可恢复，并记入局限。
+- **只读来源**：DSH 的会话定位符为 `dsh:<session-id>`，消息定位符为 `dsh:<seq>`；session key 仍按定位符摘要生成。其他会话用 `sessionQuery.observeSession(..., {projectionMode: "none"})` 读取，并在 finally 中释放 lease，不 resume/fork Agent。原生 session-reference 缺少精确 source entry 时，仅保留会话和捕获水位用于导航，不构造假截止点。
+- **模型调用**：通过原生 LLM 模型目录解析当前或固定模型，用 `prepareCall` 和 `BlockAssembler` 消费流。跟随当前模型时读取原生 `modelSelection` 投影，优先待用选择，其次最近请求，最后宿主默认；不能用恢复会话后可能过期的 `Agent.options` 代替浏览器选择。每次建立独立的 plugin user message，不设置 session ID、tools，也不调用 Agent/subagent。凭据留在 DSH adapter；不复制 API key 或 base URL。原生 reasoning effort ID 只按模型明确声明的能力映射，不把不透明名称猜成 high 等固定等级。失败、取消、缺少终止事件不能当作成功空结果。
+- **交互与取消**：复用 DSH Connection 的已认证 `/api/casepick` Fetch 路由，校验 SDK 原生 RPC 信封，不启动额外 HTTP 服务。每个接收会话独立维护 run ID、dialog ID、revision 和取消信号；旧窗口的回答与取消不能作用于新运行，关闭弹窗取消当前 CasePick 请求而非用户会话 Agent。长正文、原始回复和通知可滚动查看，不塞进 Modal 标题。
+- **设置与诊断**：用 DSH settings scope 持久化原生配置；Settings 的 CasePick 卡片提供 Debug 开关和配置入口，不加载 OMP 插件设置或模拟 OMP 模型角色。Debug 复用同一请求、原始回复、解析与核对菜单；原文只驻留当前交互内存，不另存诊断文件。
+
 
 ## 14. 分期
 

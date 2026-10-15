@@ -1,7 +1,7 @@
 // 起草模型：解析用哪个模型和思考等级、外发确认、调用、用量记录（技术设计第 8 节③、第 10 节）。
 // 不调用 setModel / setThinkingLevel，不往会话里插消息，不传工具。
 
-import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { WorkflowContext } from "../host.ts";
 import type { Api, AssistantMessage, Context, Model } from "@earendil-works/pi-ai";
 import { join } from "node:path";
 import type { Prompt } from "../core/assist.ts";
@@ -35,8 +35,8 @@ export type ResolveResult = { ok: true; value: DraftModel } | { ok: false; reaso
 // OMP 的模型角色：用户在 /model 面板里给 casepick 角色指派模型。Pi 没有 ctx.models，返回 undefined。
 export const modelRole = "casepick";
 
-function hostResolve(ctx: ExtensionCommandContext, spec: string): Model<Api> | undefined {
-    const models = (ctx as { models?: { resolve(spec: string): Model<Api> | undefined } }).models;
+function hostResolve(ctx: WorkflowContext, spec: string): Model<Api> | undefined {
+    const models = ctx.models;
     try {
         return models?.resolve(spec);
     } catch {
@@ -44,12 +44,12 @@ function hostResolve(ctx: ExtensionCommandContext, spec: string): Model<Api> | u
     }
 }
 
-export function roleModel(ctx: ExtensionCommandContext): Model<Api> | undefined {
+export function roleModel(ctx: WorkflowContext): Model<Api> | undefined {
     return hostResolve(ctx, `@${modelRole}`);
 }
 
 // OMP 插件设置里的 draftModel：current、off、@角色、provider/id，或宿主能识别的模型名。
-function modelFromSpec(ctx: ExtensionCommandContext, spec: string): Model<Api> | undefined {
+function modelFromSpec(ctx: WorkflowContext, spec: string): Model<Api> | undefined {
     const resolved = hostResolve(ctx, spec);
     if (resolved) return resolved;
     const slash = spec.indexOf("/");
@@ -61,21 +61,22 @@ function modelFromSpec(ctx: ExtensionCommandContext, spec: string): Model<Api> |
 
 // 每次起草时解析：跟随当前模型时取发起这一刻的会话模型，不在配置里写死。
 // overrides 来自 OMP 插件设置，填了值的项优先。
-export function resolveDraftModel(ctx: ExtensionCommandContext, config: Config, overrides: PluginOverrides = {}): ResolveResult {
+export function resolveDraftModel(ctx: WorkflowContext, config: Config, overrides: PluginOverrides = {}): ResolveResult {
     const choice = config.drafting.model;
     const spec = overrides.model;
+    const settingsOrigin = `${ctx.hostName ?? "OMP"} 插件设置`;
     let model: Model<Api> | undefined;
     let origin = "";
     if (spec !== undefined && spec.toLowerCase() === "off") {
-        return { ok: false, reason: "OMP 插件设置里 draftModel 为 off，不使用起草模型" };
+        return { ok: false, reason: `${settingsOrigin}里 draftModel 为 off，不使用起草模型` };
     } else if (spec !== undefined && spec.toLowerCase() === "current") {
         model = ctx.model as Model<Api> | undefined;
-        origin = "OMP 插件设置：当前模型";
+        origin = `${settingsOrigin}：当前模型`;
         if (!model) return { ok: false, reason: "当前会话没有选定模型" };
     } else if (spec !== undefined) {
         model = modelFromSpec(ctx, spec);
-        origin = `OMP 插件设置：${spec}`;
-        if (!model) return { ok: false, reason: `找不到 OMP 插件设置里的起草模型 ${spec}；可以填 provider/id、@角色、current 或 off` };
+        origin = `${settingsOrigin}：${spec}`;
+        if (!model) return { ok: false, reason: `找不到 ${settingsOrigin}里的起草模型 ${spec}；可以填 provider/id、current 或 off${ctx.hostName ? "" : "，也可以填 @角色"}` };
     } else if (choice.mode === "off") {
         return { ok: false, reason: "配置为不使用起草模型；可以在 /casepick config 里修改" };
     } else if (choice.mode === "follow_current") {
@@ -123,7 +124,7 @@ export function prepareRequests(prompts: readonly Prompt[]): PreparedRequest[] {
 }
 
 // 第一次向某个模型发送前展示完整示例请求；之后每批一行确认，完整内容可以展开查看。
-export async function confirmSend(ctx: ExtensionCommandContext, config: Config, draft: DraftModel, requests: readonly PreparedRequest[], purpose: string): Promise<boolean> {
+export async function confirmSend(ctx: WorkflowContext, config: Config, draft: DraftModel, requests: readonly PreparedRequest[], purpose: string): Promise<boolean> {
     const chars = requests.reduce((sum, request) => sum + request.chars, 0);
     const hits = new Map<string, number>();
     for (const request of requests) for (const hit of request.hits) hits.set(hit.kind, (hits.get(hit.kind) ?? 0) + hit.count);
@@ -164,7 +165,7 @@ export interface ModelReply {
     usage?: { input: number; output: number };
 }
 
-export async function callModel(ctx: ExtensionCommandContext, draft: DraftModel, prompt: Prompt, signal?: AbortSignal): Promise<ModelReply> {
+export async function callModel(ctx: WorkflowContext, draft: DraftModel, prompt: Prompt, signal?: AbortSignal): Promise<ModelReply> {
     const context: Context = { systemPrompt: prompt.system, messages: [{ role: "user", content: prompt.user, timestamp: Date.now() }] };
     const timeout = AbortSignal.timeout(draft.timeoutSeconds * 1000);
     const options = {

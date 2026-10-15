@@ -2,7 +2,8 @@
 // 只读：自己解析 JSONL，不经过 SessionManager.open，避免宿主迁移或改写原文件。
 
 import { readFile, stat } from "node:fs/promises";
-import { SessionManager, type ExtensionAPI, type ExtensionCommandContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import type { SessionEntry } from "@earendil-works/pi-coding-agent";
+import type { WorkflowAPI, WorkflowContext } from "../host.ts";
 import type { AssistEntry } from "../core/assist.ts";
 import type { RecordedEntry } from "../core/messages.ts";
 import { currentTools, sessionKeyOf, snapshotFromBranch, type SessionSnapshot } from "./read-session.ts";
@@ -24,11 +25,15 @@ export interface SessionChoice {
     id: string;
     cwd: string;
     label: string;
-    modified: Date;
+    modified?: Date;
+    created?: Date;
 }
 
 // 两个宿主的 SessionInfo 共有 path、id、cwd、modified、firstMessage；名字字段不同。
-export async function listSessions(): Promise<SessionChoice[]> {
+export async function listSessions(ctx: WorkflowContext): Promise<SessionChoice[]> {
+    if (ctx.sources) return ctx.sources.list();
+    if (!ctx.piSdk) throw new Error("Pi/OMP 入口没有提供会话 SDK");
+    const { SessionManager } = ctx.piSdk;
     const infos = await (SessionManager.listAll as () => Promise<{ path: string; id: string; cwd: string; modified: Date; firstMessage?: string; name?: string; title?: string }[]>)();
     return infos.map((info) => ({
         path: info.path, id: info.id, cwd: info.cwd, modified: new Date(info.modified),
@@ -36,7 +41,9 @@ export async function listSessions(): Promise<SessionChoice[]> {
     })).sort((a, b) => b.modified.getTime() - a.modified.getTime());
 }
 
-export function currentSession(ctx: ExtensionCommandContext, snapshot: SessionSnapshot): LoadedSession {
+export function currentSession(ctx: WorkflowContext, snapshot: SessionSnapshot): LoadedSession {
+    if (ctx.sources) return ctx.sources.current(snapshot);
+    if (!ctx.sessionManager) throw new Error("宿主没有提供当前会话身份");
     const id = ctx.sessionManager.getSessionId();
     return {
         key: snapshot.sessionKey, id, file: ctx.sessionManager.getSessionFile(),
@@ -60,7 +67,9 @@ export function mainBranch(entries: readonly RawEntry[]): RawEntry[] {
     return branch.reverse();
 }
 
-export async function loadSessionFile(path: string, pi: ExtensionAPI): Promise<LoadedSession> {
+export async function loadSessionFile(path: string, pi: WorkflowAPI, ctx: WorkflowContext): Promise<LoadedSession> {
+    if (ctx.sources) return ctx.sources.load(path);
+    if (!ctx.piSdk) throw new Error("Pi/OMP 入口没有提供会话 SDK");
     const info = await stat(path);
     if (!info.isFile()) throw new Error(`不是会话文件：${path}`);
     if (info.size > fileLimit) throw new Error(`会话文件超过 ${fileLimit / 1024 / 1024} MB，未读取：${path}`);
@@ -80,7 +89,7 @@ export async function loadSessionFile(path: string, pi: ExtensionAPI): Promise<L
     });
     const id = header?.id ?? path;
     const branch = mainBranch(entries) as unknown as SessionEntry[];
-    const snapshot = await snapshotFromBranch(branch, sessionKeyOf(id), currentTools(pi));
+    const snapshot = await snapshotFromBranch(branch, sessionKeyOf(id), currentTools(pi), ctx.piSdk);
     return { key: snapshot.sessionKey, id, file: path, label: `会话 ${id.slice(0, 8)}${header?.cwd ? ` · ${header.cwd}` : ""}`, snapshot, external: true };
 }
 
@@ -110,6 +119,7 @@ export interface SourceReference {
 // 汇编材料：custom_message 带 sourceSessionId / sourceEntryId / sourceRole（可能在 details 里）。
 // 它们只用来导航，不能当截止点，也不进任何输入。
 export function sourceReferences(snapshot: SessionSnapshot): SourceReference[] {
+    if (snapshot.sourceReferences) return snapshot.sourceReferences;
     const references: SourceReference[] = [];
     for (const entry of snapshot.branch as unknown as Record<string, unknown>[]) {
         if (entry.type !== "custom_message") continue;
@@ -125,6 +135,6 @@ export function sourceReferences(snapshot: SessionSnapshot): SourceReference[] {
     return references;
 }
 
-export async function findSessionFile(sessionId: string): Promise<string | undefined> {
-    return (await listSessions()).find((session) => session.id === sessionId)?.path;
+export async function findSessionFile(sessionId: string, ctx: WorkflowContext): Promise<string | undefined> {
+    return (await listSessions(ctx)).find((session) => session.id === sessionId)?.path;
 }

@@ -1,7 +1,8 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { buildSessionContext, convertToLlm, SessionManager, VERSION, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { readFileSync } from "node:fs";
 import { configure } from "./pi/config-ui.ts";
 import { generateCases } from "./pi/generate.ts";
+import type { WorkflowContext } from "./host.ts";
 import {
     type Action,
     completeSubcommand,
@@ -9,9 +10,9 @@ import {
     parseCommand,
 } from "./command.ts";
 
-type CommandOptions = Parameters<ExtensionAPI["registerCommand"]>[1];
-type CommandContext = Parameters<CommandOptions["handler"]>[1];
-type Handler = (args: string[], ctx: CommandContext) => Promise<void>;
+const piSdk = { buildSessionContext, convertToLlm, SessionManager, VERSION };
+
+type Handler = (args: string[], ctx: WorkflowContext) => Promise<void>;
 
 function notImplemented(label: string): Handler {
     return async (_args, ctx) => {
@@ -66,7 +67,16 @@ export default function casepick(pi: ExtensionAPI): void {
                     return;
                 case "run":
                     try {
-                        await handlers[parsed.action](parsed.args, ctx);
+                        // Keep SDK bindings in the extension entry, where OMP resolves its aliases.
+                        const host: WorkflowContext = ctx;
+                        const workflow: WorkflowContext = {
+                            cwd: ctx.cwd, hasUI: ctx.hasUI, isIdle: () => ctx.isIdle(),
+                            ui: ctx.ui, modelRegistry: ctx.modelRegistry,
+                            get model() { return ctx.model; },
+                            get models() { return host.models; },
+                            sessionManager: ctx.sessionManager, piSdk,
+                        };
+                        await handlers[parsed.action](parsed.args, workflow);
                     } catch (error) {
                         ctx.ui.notify(`CasePick 未完成：${error instanceof Error ? error.message : String(error)}`, "error");
                     }

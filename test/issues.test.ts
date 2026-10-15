@@ -7,6 +7,8 @@ import { readFileSync } from "node:fs";
 import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 import { SessionManager, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import * as piSdk from "@earendil-works/pi-coding-agent";
+import type { WorkflowContext } from "../src/host.ts";
 import { caseDigests } from "../src/core/digest.ts";
 import { draftCase, setBasis } from "../src/core/draft-rule.ts";
 import {
@@ -29,6 +31,7 @@ addFormats(ajv);
 const detroitAccepts = ajv.compile(JSON.parse(readFileSync(new URL("./fixtures/detroit/detroit-v2.schema.json", import.meta.url), "utf8")));
 
 const pi = { getActiveTools: () => [], getAllTools: () => [] } as unknown as ExtensionAPI;
+const ctx = { piSdk } as WorkflowContext;
 
 function assistant(text: string) {
     return {
@@ -61,7 +64,7 @@ describe("读取其他会话文件", () => {
         const { path } = await writeSession("a.jsonl");
         const before = await readFile(path, "utf8");
         const mtime = (await stat(path)).mtimeMs;
-        const session = await loadSessionFile(path, pi);
+        const session = await loadSessionFile(path, pi, ctx);
         assert.equal(session.external, true);
         const texts = session.snapshot.messages.map((item) => item.message.content);
         assert.ok(!texts.includes("已放弃分支上的话"));
@@ -72,7 +75,7 @@ describe("读取其他会话文件", () => {
 
     test("从其他会话的截止点重建输入，后续纠正不进输入", async () => {
         const { path, cutoff } = await writeSession("b.jsonl");
-        const session = await loadSessionFile(path, pi);
+        const session = await loadSessionFile(path, pi, ctx);
         const context = contextAt(session.snapshot, cutoff);
         assert.deepEqual(context.input.map((item) => item.message.content), [
             "PC 端按钮可点，APP 端不可点，帮我查原因。", "先看两端数据。", "生产实例已经和 cac32df 对齐，新代码已全量。",
@@ -83,11 +86,11 @@ describe("读取其他会话文件", () => {
     test("最后一行写到一半时忽略，中间行损坏时报错", async () => {
         const { path } = await writeSession("c.jsonl");
         await writeFile(path, `${await readFile(path, "utf8")}{"type":"mess`);
-        await loadSessionFile(path, pi);
+        await loadSessionFile(path, pi, ctx);
         const lines = (await readFile(path, "utf8")).split("\n");
         lines.splice(2, 0, "{bad");
         await writeFile(path, lines.join("\n"));
-        await assert.rejects(loadSessionFile(path, pi), /不是合法 JSON/);
+        await assert.rejects(loadSessionFile(path, pi, ctx), /不是合法 JSON/);
     });
 
     test("主分支沿父链回溯，遇到环也会停止", () => {
@@ -162,7 +165,7 @@ describe("主案例", () => {
 
 describe("长程切片的 lint", async () => {
     const { path, cutoff } = await writeSession("lint.jsonl");
-    const session = await loadSessionFile(path, pi);
+    const session = await loadSessionFile(path, pi, ctx);
     const context = contextAt(session.snapshot, cutoff);
 
     function slice(change?: (doc: CaseDocument) => void): CaseDocument {

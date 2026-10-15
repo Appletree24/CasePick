@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { SessionManager, type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { SessionManager, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import * as piSdk from "@earendil-works/pi-coding-agent";
+import type { WorkflowContext } from "../src/host.ts";
 import { Type as OmpType } from "@oh-my-pi/omptype/typebox";
 import Ajv2020 from "ajv/dist/2020.js";
 import { contextAt, readSession } from "../src/pi/read-session.ts";
@@ -20,7 +22,7 @@ function assistant(text: string) {
 }
 
 async function scan(manager: SessionManager) {
-    return readSession({ sessionManager: manager } as ExtensionCommandContext, {
+    return readSession({ sessionManager: manager, piSdk } as WorkflowContext, {
         getActiveTools: () => [], getAllTools: () => [],
     } as ExtensionAPI);
 }
@@ -92,7 +94,7 @@ test("OMP callable 工具 schema 导出后仍保留必填字段和枚举约束",
         path: OmpType.String(),
         mode: OmpType.Optional(OmpType.Union([OmpType.Literal("text"), OmpType.Literal("raw")])),
     });
-    const snapshot = await readSession({ sessionManager: manager } as ExtensionCommandContext, {
+    const snapshot = await readSession({ sessionManager: manager, piSdk } as WorkflowContext, {
         getActiveTools: () => ["read"],
         getAllTools: () => [{ name: "read", description: "读取文件", parameters }],
     } as unknown as ExtensionAPI);

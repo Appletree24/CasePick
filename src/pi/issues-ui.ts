@@ -1,7 +1,7 @@
 // “整理长程问题”入口（docs/long-trajectory-slicing.md §9）。
 // 主案例和证据只存本地；切片走普通案例的审阅和保存流程。
 
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { WorkflowAPI, WorkflowContext } from "../host.ts";
 import { messagePreview } from "../core/candidates.ts";
 import { digestOf } from "../core/digest.ts";
 import {
@@ -22,8 +22,8 @@ import {
 import { pick, promptEditor, reviewCase, showText } from "./ui.ts";
 
 interface Workspace {
-    pi: ExtensionAPI;
-    ctx: ExtensionCommandContext;
+    pi: WorkflowAPI;
+    ctx: WorkflowContext;
     version: string;
     current: LoadedSession;
     loaded: Map<string, LoadedSession>;
@@ -57,7 +57,7 @@ async function sessionOf(ws: Workspace, key: string, issue: Issue): Promise<Load
     const record = issue.sessions.find((session) => session.key === key);
     if (!record?.file) return undefined;
     try {
-        const loaded = await loadSessionFile(record.file, ws.pi);
+        const loaded = await loadSessionFile(record.file, ws.pi, ws.ctx);
         ws.loaded.set(key, loaded);
         return loaded;
     } catch (error) {
@@ -85,22 +85,22 @@ async function chooseSession(ws: Workspace, issue: Issue, title: string): Promis
 }
 
 async function addOtherSession(ws: Workspace, issue: Issue): Promise<LoadedSession | undefined> {
-    const how = await ws.ctx.ui.select("添加哪个会话？（只读打开，不修改原文件）", ["从会话列表选择", "输入会话文件路径", "返回"]);
+    const how = await ws.ctx.ui.select("添加哪个会话？（只读打开，不修改原记录）", ["从会话列表选择", ws.ctx.hostName ? "输入会话 ID 或定位符" : "输入会话文件路径", "返回"]);
     if (!how || how === "返回") return undefined;
     let path: string | undefined;
     if (how === "从会话列表选择") {
         ws.ctx.ui.setStatus("casepick", "CasePick：正在列出会话…");
         let sessions;
-        try { sessions = await listSessions(); } finally { ws.ctx.ui.setStatus("casepick", undefined); }
-        const chosen = await pick(ws.ctx.ui, "选择会话（最近修改的在前）", sessions.filter((item) => item.id !== ws.current.id),
-            (item) => `${item.modified.toISOString().slice(0, 16)} ${item.label} · ${item.cwd}`);
+        try { sessions = await listSessions(ws.ctx); } finally { ws.ctx.ui.setStatus("casepick", undefined); }
+        const chosen = await pick(ws.ctx.ui, "选择会话", sessions.filter((item) => item.id !== ws.current.id),
+            (item) => `${item.modified ? item.modified.toISOString().slice(0, 16) : item.created ? `创建于 ${item.created.toISOString().slice(0, 16)}` : ""} ${item.label} · ${item.cwd}`);
         path = chosen?.path;
     } else {
-        path = (await text(ws, "会话文件的完整路径（.jsonl）"))?.trim();
+        path = (await text(ws, ws.ctx.hostName ? "会话 ID 或定位符（dsh:会话ID）" : "会话文件的完整路径（.jsonl）"))?.trim();
     }
     if (!path) return undefined;
     try {
-        const session = await loadSessionFile(path, ws.pi);
+        const session = await loadSessionFile(path, ws.pi, ws.ctx);
         ws.loaded.set(session.key, session);
         if (addSession(issue, { key: session.key, file: path, label: session.label })) await save(ws, issue);
         ws.ctx.ui.notify(`已添加 ${session.label}，主分支 ${session.snapshot.messages.length} 条消息。`, "info");
@@ -204,10 +204,10 @@ async function traceAssembled(ws: Workspace, issue: Issue): Promise<void> {
     const key = sessionKeyOf(reference.sessionId);
     let original = ws.loaded.get(key);
     if (!original) {
-        const path = await findSessionFile(reference.sessionId);
+        const path = await findSessionFile(reference.sessionId, ws.ctx);
         if (path) {
             try {
-                original = await loadSessionFile(path, ws.pi);
+                original = await loadSessionFile(path, ws.pi, ws.ctx);
                 ws.loaded.set(key, original);
                 addSession(issue, { key, file: path, label: original.label });
             } catch (error) {
@@ -417,7 +417,7 @@ async function issueMenu(ws: Workspace, issue: Issue, issues: Issue[]): Promise<
     }
 }
 
-export async function manageIssues(pi: ExtensionAPI, ctx: ExtensionCommandContext, version: string, snapshot: SessionSnapshot): Promise<void> {
+export async function manageIssues(pi: WorkflowAPI, ctx: WorkflowContext, version: string, snapshot: SessionSnapshot): Promise<void> {
     const current = currentSession(ctx, snapshot);
     const ws: Workspace = { pi, ctx, version, current, loaded: new Map([[current.key, current]]) };
     while (true) {

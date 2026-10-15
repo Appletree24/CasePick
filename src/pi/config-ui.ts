@@ -1,11 +1,11 @@
 // /casepick config：选择起草模型和思考等级（技术设计第 12 节）。
 
-import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { WorkflowContext } from "../host.ts";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { reasoningLevels, resolveReasoning, supportedLevels, type ReasoningLevel } from "../core/reasoning.ts";
 import { configPath, loadConfig, saveConfig, type Config } from "../store/config.ts";
 import { modelKey, modelRole, resolveDraftModel, roleModel } from "./model.ts";
-import { loadPluginSettings } from "./plugin-settings.ts";
+import { settingsFor } from "./plugin-settings.ts";
 import { pick, showText } from "./ui.ts";
 
 const roleHelp = `OMP 支持自定义模型角色。声明一次 ${modelRole} 角色后，就能在 /model 面板里像给 @slow 指派模型一样给它选模型：
@@ -24,7 +24,7 @@ modelTags:
 思考等级仍在这里配置（默认 low），角色值里的思考后缀不会被读取。
 Pi 没有模型角色，这一项只在 OMP 里生效。`;
 
-function describeModel(ctx: ExtensionCommandContext, config: Config): string {
+function describeModel(ctx: WorkflowContext, config: Config): string {
     const choice = config.drafting.model;
     if (choice.mode === "off") return "不使用模型";
     if (choice.mode === "follow_current") {
@@ -37,15 +37,15 @@ function describeModel(ctx: ExtensionCommandContext, config: Config): string {
 }
 
 // 思考等级按所选模型的能力列出；跟随当前模型时按当前模型列出。
-function targetModel(ctx: ExtensionCommandContext, config: Config): Model<Api> | undefined {
+function targetModel(ctx: WorkflowContext, config: Config): Model<Api> | undefined {
     const choice = config.drafting.model;
     if (choice.mode === "follow_current") return roleModel(ctx) ?? ctx.model as Model<Api> | undefined;
     if (choice.mode === "fixed") return ctx.modelRegistry.find(choice.provider, choice.id);
     return undefined;
 }
 
-async function chooseModel(ctx: ExtensionCommandContext, config: Config): Promise<boolean> {
-    const top = await ctx.ui.select("起草模型", ["跟随当前模型（默认；OMP 里配置了 @casepick 角色时优先用它）", "选择一个已配置的模型", "不使用模型（只用规则和手填）", "在 OMP 的 /model 面板里指定", "返回"]);
+async function chooseModel(ctx: WorkflowContext, config: Config): Promise<boolean> {
+    const top = await ctx.ui.select("起草模型", [ctx.hostName ? "跟随当前模型（默认）" : "跟随当前模型（默认；OMP 里配置了 @casepick 角色时优先用它）", "选择一个已配置的模型", "不使用模型（只用规则和手填）", ...(ctx.hostName ? [] : ["在 OMP 的 /model 面板里指定"]), "返回"]);
     if (!top || top === "返回") return false;
     if (top.startsWith("在 OMP")) {
         await showText(ctx.ui, "在 OMP 的 /model 面板里指定起草模型", roleHelp);
@@ -68,7 +68,7 @@ async function chooseModel(ctx: ExtensionCommandContext, config: Config): Promis
     return true;
 }
 
-async function chooseReasoning(ctx: ExtensionCommandContext, config: Config): Promise<boolean> {
+async function chooseReasoning(ctx: WorkflowContext, config: Config): Promise<boolean> {
     const model = targetModel(ctx, config);
     const levels: ReasoningLevel[] = model ? ["off", ...supportedLevels(model)] : [...reasoningLevels];
     if (model && levels.length === 1) {
@@ -82,13 +82,13 @@ async function chooseReasoning(ctx: ExtensionCommandContext, config: Config): Pr
     return true;
 }
 
-export async function configure(ctx: ExtensionCommandContext): Promise<void> {
+export async function configure(ctx: WorkflowContext): Promise<void> {
     const config = await loadConfig();
     while (true) {
         // 每轮重新读取，用户可能刚在 OMP 设置的 Plugins 分区里改过。
-        const plugin = await loadPluginSettings(ctx.cwd, "models" in ctx);
+        const plugin = await settingsFor(ctx);
         const overridden = Object.entries(plugin.overrides).map(([key, value]) => `${key}=${value}`);
-        const pluginNote = overridden.length ? `\nOMP 设置 → Plugins → casepick 覆盖了：${overridden.join("，")}（这些项以 Plugins 分区为准）`
+        const pluginNote = overridden.length ? `\n${plugin.source ?? "OMP 设置 → Plugins → casepick"} 覆盖了：${overridden.join("，")}（这些项以宿主插件设置为准）`
             : plugin.warnings.length ? `\n${plugin.warnings.join("\n")}` : "";
         const model = targetModel(ctx, config);
         const reasoning = model ? resolveReasoning(model, config.drafting.reasoning) : { level: config.drafting.reasoning };
@@ -98,7 +98,7 @@ export async function configure(ctx: ExtensionCommandContext): Promise<void> {
             `起草模型      ${describeModel(ctx, config)}`,
             `思考等级      ${config.drafting.reasoning}${reasoning.level !== config.drafting.reasoning && config.drafting.reasoning !== "off" ? `（实际 ${reasoning.level ?? "不传"}）` : ""}`,
             `已同意外发的模型 ${config.drafting.consented.length} 个（选择以清空）`,
-            `Debug 模式    ${(plugin.overrides.debug ?? config.drafting.debug) ? "开启" : "关闭"}${plugin.overrides.debug !== undefined ? "（以 Plugins 设置为准）" : ""}`,
+            `Debug 模式    ${(plugin.overrides.debug ?? config.drafting.debug) ? "开启" : "关闭"}${plugin.overrides.debug !== undefined ? "（以宿主插件设置为准）" : ""}`,
             "完成",
         ]);
         if (!choice || choice === "完成") return;
@@ -107,7 +107,7 @@ export async function configure(ctx: ExtensionCommandContext): Promise<void> {
         else if (choice.startsWith("思考等级")) changed = await chooseReasoning(ctx, config);
         else if (choice.startsWith("Debug 模式")) {
             if (plugin.overrides.debug !== undefined) {
-                ctx.ui.notify("debug 已由 OMP Settings → Plugins → casepick 覆盖，请在那里切换开关。", "info");
+                ctx.ui.notify(`debug 已由 ${plugin.source ?? "OMP Settings → Plugins → casepick"} 覆盖，请在那里切换开关。`, "info");
             } else {
                 config.drafting.debug = !config.drafting.debug;
                 changed = true;

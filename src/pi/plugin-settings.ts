@@ -3,6 +3,7 @@
 // 填了值的项覆盖 /casepick config 的对应项，留空的项沿用 /casepick config。
 
 import { reasoningLevels, type ReasoningLevel } from "../core/reasoning.ts";
+import type { WorkflowContext } from "../host.ts";
 
 export const pluginName = "casepick";
 
@@ -20,6 +21,7 @@ export interface PluginSettingsResult {
     // OMP 上读取失败或值不合法时的说明；Pi 上为空。
     warnings: string[];
     available: boolean;
+    source?: string;
 }
 
 export type SettingsLoader = (name: string, cwd: string) => Promise<Record<string, unknown>>;
@@ -85,4 +87,9 @@ export async function loadPluginSettings(cwd: string, isOmp: boolean, loader?: S
     } catch (error) {
         return { overrides: {}, warnings: [`读取 OMP 插件设置失败：${error instanceof Error ? error.message : String(error)}`], available: false };
     }
+}
+
+// 宿主设置入口；原生宿主负责自己的持久化，Pi/OMP 保持原读取路径。
+export function settingsFor(ctx: WorkflowContext): Promise<PluginSettingsResult> {
+    return ctx.pluginSettings ? ctx.pluginSettings() : loadPluginSettings(ctx.cwd, "models" in ctx);
 }

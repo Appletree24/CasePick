@@ -1,7 +1,7 @@
 // 模型辅助的执行流程：解析模型 → 构造提示词 → 脱敏 → 外发确认 → 逐个请求 → 核对。
 // 核对不过的建议丢弃并展示原因，不重试。
 
-import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { WorkflowContext } from "../host.ts";
 import {
     chunkEntries, evidencePrompt, parseJsonObject, slicePrompt, verifyEvidence, verifySlices,
     type AssistEntry, type EvidenceProposal, type Prompt, type Rejected, type SliceProposal,
@@ -9,7 +9,7 @@ import {
 import { loadConfig, type Config } from "../store/config.ts";
 import { callModel, confirmSend, prepareRequests, resolveDraftModel } from "./model.ts";
 import type { DraftModel, ModelReply, PreparedRequest } from "./model.ts";
-import { loadPluginSettings } from "./plugin-settings.ts";
+import { settingsFor } from "./plugin-settings.ts";
 import { showText } from "./ui.ts";
 
 interface Prepared {
@@ -18,9 +18,9 @@ interface Prepared {
     debug: boolean;
 }
 
-async function prepare(ctx: ExtensionCommandContext): Promise<Prepared | undefined> {
+async function prepare(ctx: WorkflowContext): Promise<Prepared | undefined> {
     const config = await loadConfig();
-    const plugin = await loadPluginSettings(ctx.cwd, "models" in ctx);
+    const plugin = await settingsFor(ctx);
     for (const warning of plugin.warnings) ctx.ui.notify(warning, "warning");
     const resolved = resolveDraftModel(ctx, config, plugin.overrides);
     if (!resolved.ok) {
@@ -39,7 +39,7 @@ interface DebugOutcome {
 }
 
 // 仅在当前调用中展示脱敏后的请求和原始回复；不持久化内容、不收集调用凭据。
-async function showDebug(ctx: ExtensionCommandContext, purpose: string, index: number, total: number,
+async function showDebug(ctx: WorkflowContext, purpose: string, index: number, total: number,
     draft: DraftModel, request: PreparedRequest, outcome: DebugOutcome): Promise<void> {
     ctx.ui.setStatus("casepick", undefined);
     const summary = `${purpose} Debug · 请求 ${index + 1}/${total}\n${outcome.status}\n${draft.key} · 思考 ${draft.reasoning ?? "off"} · 输出上限 ${draft.maxOutputTokens} · 超时 ${draft.timeoutSeconds}s\n停止原因：${outcome.reply?.stopReason ?? "未收到回复"}；用量：${outcome.reply?.usage ? `${outcome.reply.usage.input}/${outcome.reply.usage.output} tokens` : "未知"}\n仅在当前界面展示；原始回复可能含敏感内容，不保存日志。`;
@@ -63,7 +63,7 @@ async function showDebug(ctx: ExtensionCommandContext, purpose: string, index: n
     }
 }
 
-async function run<T>(ctx: ExtensionCommandContext, purpose: string, prompts: Prompt[],
+async function run<T>(ctx: WorkflowContext, purpose: string, prompts: Prompt[],
     verify: (reply: unknown, index: number) => { accepted: T[]; rejected: Rejected[] }): Promise<{ accepted: T[]; rejected: Rejected[] } | undefined> {
     const prepared = await prepare(ctx);
     if (!prepared) return undefined;
@@ -112,14 +112,14 @@ async function run<T>(ctx: ExtensionCommandContext, purpose: string, prompts: Pr
     return { accepted, rejected };
 }
 
-export async function proposeEvidence(ctx: ExtensionCommandContext, issueTitle: string, entries: AssistEntry[]): Promise<EvidenceProposal[] | undefined> {
+export async function proposeEvidence(ctx: WorkflowContext, issueTitle: string, entries: AssistEntry[]): Promise<EvidenceProposal[] | undefined> {
     const chunks = chunkEntries(entries);
     const result = await run(ctx, "找证据", chunks.map((chunk) => evidencePrompt(issueTitle, chunk)), (reply, index) => verifyEvidence(reply, chunks[index]));
     return result?.accepted;
 }
 
 // entries 是同一会话主分支上的消息。分段时带上前一段末尾的消息，避免出处落在上一段。
-export async function proposeSlices(ctx: ExtensionCommandContext, issueTitle: string, entries: AssistEntry[], fixedCutoff?: string): Promise<SliceProposal[] | undefined> {
+export async function proposeSlices(ctx: WorkflowContext, issueTitle: string, entries: AssistEntry[], fixedCutoff?: string): Promise<SliceProposal[] | undefined> {
     const chunks = fixedCutoff ? [entries] : chunkEntries(entries, 100_000, 30);
     const result = await run(ctx, fixedCutoff ? "起草要求" : "提议切片", chunks.map((chunk) => slicePrompt(issueTitle, chunk, { cutoff: fixedCutoff })),
         (reply, index) => verifySlices(reply, chunks[index], fixedCutoff));

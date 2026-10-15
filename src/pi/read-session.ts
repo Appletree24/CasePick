@@ -1,12 +1,7 @@
 import { setImmediate } from "node:timers/promises";
-import {
-    buildSessionContext,
-    convertToLlm,
-    VERSION,
-    type ExtensionAPI,
-    type ExtensionCommandContext,
-    type SessionEntry,
-} from "@earendil-works/pi-coding-agent";
+import type { SessionEntry } from "@earendil-works/pi-coding-agent";
+import type { PiSessionSDK, WorkflowAPI, WorkflowContext } from "../host.ts";
+import type { SourceReference } from "./sources.ts";
 import type { Task } from "../schema/case.ts";
 import { convertMessage, type RecordedMessage } from "../core/convert.ts";
 import { digestOf } from "../core/digest.ts";
@@ -19,11 +14,20 @@ type HostMessage = (RecordedMessage & { stopReason?: string; isError?: boolean }
         sections?: Record<string, string | null>;
     });
 
+export interface SnapshotEntry {
+    id: string;
+    type: string;
+    timestamp?: string | number;
+    content?: unknown;
+}
+
 export interface SessionSnapshot {
     sessionKey: string;
-    branch: SessionEntry[];
+    branch: SnapshotEntry[];
     messages: RecordedEntry[];
     tools: Task["tools"];
+    contextAt(cutoffEntry: string): CaseContext;
+    sourceReferences?: SourceReference[];
 }
 
 export function sessionKeyOf(sessionId: string): string {
@@ -31,10 +35,13 @@ export function sessionKeyOf(sessionId: string): string {
 }
 
 // 读取只由 /casepick 主动触发。不调用 getEntries，不读取其他分支或改写会话。
-export async function readSession(ctx: ExtensionCommandContext, pi: ExtensionAPI): Promise<SessionSnapshot> {
+export async function readSession(ctx: WorkflowContext, pi: WorkflowAPI): Promise<SessionSnapshot> {
+    if (ctx.sources) return ctx.sources.readCurrent();
+    if (!ctx.sessionManager) throw new Error("宿主没有提供会话读取接口");
+    if (!ctx.piSdk) throw new Error("Pi/OMP 入口没有提供会话 SDK");
     const sessionId = ctx.sessionManager.getSessionId();
     const leafId = ctx.sessionManager.getLeafId();
-    const snapshot = await snapshotFromBranch(ctx.sessionManager.getBranch(), sessionKeyOf(sessionId), currentTools(pi));
+    const snapshot = await snapshotFromBranch(ctx.sessionManager.getBranch(), sessionKeyOf(sessionId), currentTools(pi), ctx.piSdk);
     if (ctx.sessionManager.getSessionId() !== sessionId || ctx.sessionManager.getLeafId() !== leafId) {
         throw new Error("读取期间会话发生了变化，请重新运行 /casepick。");
     }
@@ -42,7 +49,8 @@ export async function readSession(ctx: ExtensionCommandContext, pi: ExtensionAPI
 }
 
 // 工具定义只能取扫描时的当前配置，标为近似。
-export function currentTools(pi: ExtensionAPI): Task["tools"] {
+export function currentTools(pi: WorkflowAPI): Task["tools"] {
+    if (!pi.getActiveTools || !pi.getAllTools) throw new Error("Pi/OMP 宿主没有提供工具目录接口");
     const active = new Set(pi.getActiveTools());
     const definitions = pi.getAllTools().filter((tool) => active.has(tool.name)).map((tool) => {
         // Pi 使用普通 TypeBox 对象；OMP omptype schema 是可调用对象，必须先导出 JSON Schema。
@@ -58,7 +66,7 @@ export function currentTools(pi: ExtensionAPI): Task["tools"] {
 }
 
 // 把一条分支转换成快照。当前会话和用户选定的其他会话文件共用，读取上限一致。
-export async function snapshotFromBranch(branch: SessionEntry[], sessionKey: string, tools: Task["tools"]): Promise<SessionSnapshot> {
+export async function snapshotFromBranch(branch: SessionEntry[], sessionKey: string, tools: Task["tools"], sdk: PiSessionSDK): Promise<SessionSnapshot> {
     let bytes = 0;
     let count = 0;
     const messages: RecordedEntry[] = [];
@@ -70,7 +78,7 @@ export async function snapshotFromBranch(branch: SessionEntry[], sessionKey: str
             throw new Error("分支超过 2000 条消息或 20 MB 的读取上限，已停止读取；本次不会用不完整历史生成案例。");
         }
         if (entry.type === "message") {
-            const converted: HostMessage[] = convertToLlm([entry.message]);
+            const converted: HostMessage[] = sdk.convertToLlm([entry.message]);
             for (const message of converted) {
                 if (message.role === "system" || message.role === "developer") continue;
                 messages.push({
@@ -82,17 +90,26 @@ export async function snapshotFromBranch(branch: SessionEntry[], sessionKey: str
         }
         if (index % 64 === 0) await setImmediate();
     }
-    return { sessionKey, branch: structuredClone(branch), messages, tools: structuredClone(tools) };
+    const frozen = structuredClone(branch);
+    const snapshot: SessionSnapshot = {
+        sessionKey, branch: frozen, messages, tools,
+        contextAt: (cutoffEntry) => piContextAt(snapshot, frozen, sdk, cutoffEntry),
+    };
+    return snapshot;
 }
 
 export function contextAt(snapshot: SessionSnapshot, cutoffEntry: string): CaseContext {
-    const cutoff = snapshot.branch.find((entry) => entry.id === cutoffEntry);
+    return snapshot.contextAt(cutoffEntry);
+}
+
+function piContextAt(snapshot: SessionSnapshot, branch: SessionEntry[], sdk: PiSessionSDK, cutoffEntry: string): CaseContext {
+    const cutoff = branch.find((entry) => entry.id === cutoffEntry);
     if (!cutoff || cutoff.type !== "message" || cutoff.message.role !== "assistant") {
         throw new Error("请选择当前分支中的一条 assistant 回复作为出错消息");
     }
     // 两个宿主都提供此接口；压缩、Pi context_edit 和 OMP reset 由当前宿主解释。
     // 只重建父节点，不能用当前叶子的上下文，否则后续纠正会泄漏进题目。
-    const context = buildSessionContext(snapshot.branch, cutoff.parentId);
+    const context = sdk.buildSessionContext(branch, cutoff.parentId);
     const input: RecordedEntry[] = [];
     const transforms: CaseContext["transforms"] = [];
     const limitations: CaseContext["limitations"] = [
@@ -102,7 +119,7 @@ export function contextAt(snapshot: SessionSnapshot, cutoffEntry: string): CaseC
     // OMP 的 session_init 记录基础提示，不保证包含逐轮 hook 的临时覆盖。
     // 只读截止点之前最新的一份；没有记录时不能拿现在的系统提示代替。
     let recordedBase: string | undefined;
-    for (const entry of snapshot.branch) {
+    for (const entry of branch) {
         if (entry.id === cutoffEntry) break;
         const init = entry as { type: string; systemPrompt?: string | string[] };
         if (init.type === "session_init") {
@@ -114,7 +131,7 @@ export function contextAt(snapshot: SessionSnapshot, cutoffEntry: string): CaseC
     let systemCount = recordedBase === undefined ? 0 : 1;
     let developerCount = 0;
     let lateSystem = false;
-    const converted: HostMessage[] = convertToLlm(context.messages);
+    const converted: HostMessage[] = sdk.convertToLlm(context.messages);
     for (const [index, message] of converted.entries()) {
         if (message.role === "system" || message.role === "developer") {
             systemCount++;
@@ -145,9 +162,9 @@ export function contextAt(snapshot: SessionSnapshot, cutoffEntry: string): CaseC
     for (const entry of snapshot.messages.slice(position + 1)) {
         if (entry.message.role === "assistant") break;
         followup.push(structuredClone(entry.message));
-        const raw = snapshot.branch.find((candidate) => candidate.id === entry.id);
+        const raw = branch.find((candidate) => candidate.id === entry.id);
         if (raw?.type === "message") {
-            const converted: HostMessage[] = convertToLlm([raw.message]);
+            const converted: HostMessage[] = sdk.convertToLlm([raw.message]);
             for (const message of converted) {
                 if (message.role !== "system" && message.role !== "developer") transforms.push(...convertMessage(message, `diagnostic.followup[${followup.length - 1}]`).transforms);
             }
@@ -168,7 +185,7 @@ export function contextAt(snapshot: SessionSnapshot, cutoffEntry: string): CaseC
         limitations.push({ field: "tool_calls.arguments", status: "approximate", note: "宿主保存的是已解析的参数对象，导出为 JSON 字符串；原始 JSON 的空白与键编码不可恢复" });
     }
     return {
-        sessionKey: snapshot.sessionKey, cutoffEntry, hostVersion: VERSION, input,
+        sessionKey: snapshot.sessionKey, cutoffEntry, hostVersion: sdk.VERSION, input,
         observed: output.message, followup, system, tools: structuredClone(snapshot.tools), limitations, transforms,
     };
 }

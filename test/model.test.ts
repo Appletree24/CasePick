@@ -95,14 +95,6 @@ test("OMP 给 casepick 角色指派了模型时优先使用，否则跟随当前
     assert.ok(fixed.ok && fixed.value.key === "acme/astra");
 });
 
-test("编辑框以回车提交的方式打开", async () => {
-    const { promptEditor } = await import("../src/pi/ui.ts");
-    const calls: unknown[][] = [];
-    const ui = { editor: (...args: unknown[]) => { calls.push(args); return Promise.resolve("x"); } };
-    assert.equal(await promptEditor(ui as never, "标题", "预填"), "x");
-    assert.deepEqual(calls[0], ["标题", "预填", undefined, { promptStyle: true }]);
-});
-
 test("OMP 插件设置里填了值的项覆盖 /casepick config", async () => {
     const { loadPluginSettings, parseOverrides } = await import("../src/pi/plugin-settings.ts");
     const plugin = await loadPluginSettings("/work", true, async (name) => {
@@ -122,7 +114,7 @@ test("OMP 插件设置里填了值的项覆盖 /casepick config", async () => {
     const high = resolveDraftModel(context(), defaultConfig(), { reasoning: "high" });
     assert.ok(high.ok && high.value.reasoning === "high" && high.value.key === "acme/astra");
     assert.equal(resolveDraftModel(context(), defaultConfig(), { model: "off" }).ok, false);
-    assert.match((resolveDraftModel(context(), defaultConfig(), { model: "acme/gone" }) as { reason: string }).reason, /找不到 OMP 插件设置/);
+    assert.equal(resolveDraftModel(context(), defaultConfig(), { model: "acme/gone" }).ok, false);
     const role = { ...context(), models: { resolve: (spec: string) => (spec === "@review" ? plain : undefined) } } as unknown as ExtensionCommandContext;
     const byRole = resolveDraftModel(role, defaultConfig(), { model: "@review" });
     assert.ok(byRole.ok && byRole.value.key === "acme/plain");

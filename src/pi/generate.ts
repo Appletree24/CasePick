@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { WorkflowAPI, WorkflowContext } from "../host.ts";
 import { findCandidates } from "../core/candidates.ts";
 import { appendCase, casesPath } from "../store/cases.ts";
 import { manageIssues } from "./issues-ui.ts";
@@ -7,7 +7,7 @@ import { buildSlice, type SliceDraft } from "./slice.ts";
 import { currentSession } from "./sources.ts";
 import { pick, reviewCase } from "./ui.ts";
 
-export async function generateCases(pi: ExtensionAPI, ctx: ExtensionCommandContext, version: string): Promise<void> {
+export async function generateCases(pi: WorkflowAPI, ctx: WorkflowContext, version: string): Promise<void> {
     if (!ctx.isIdle()) {
         ctx.ui.notify("请等当前回复结束后再运行 /casepick，以便读取完整消息。", "warning");
         return;

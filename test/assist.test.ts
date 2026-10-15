@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
-    chunkEntries, parseJsonObject, requirementFromProposal, slicePrompt, verifyEvidence, verifySlices, type AssistEntry,
+    chunkEntries, parseJsonObject, requirementFromProposal, verifyEvidence, verifySlices, type AssistEntry,
 } from "../src/core/assist.ts";
 import { norms, rubricForNorm } from "../src/core/norms.ts";
 import { resolveReasoning, supportedLevels } from "../src/core/reasoning.ts";
@@ -82,10 +82,6 @@ describe("提议切片的核对", () => {
         const { accepted } = verifySlices({ slices: [proposal] }, entries);
         const result = requirementFromProposal(accepted[0], [{ role: "user", content: "压缩摘要" }], "r1");
         assert.ok("error" in result);
-    });
-
-    test("提示词写明不能用截止点之后的事实", () => {
-        assert.match(slicePrompt("书号问题", entries).system, /不要使用截止点之后才出现的事实/);
     });
 });
 

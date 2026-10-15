@@ -1,5 +1,5 @@
 import { stripVTControlCharacters } from "node:util";
-import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import type { WorkflowUI } from "../host.ts";
 import { Check as CheckSchema, schemaErrors, type CaseDocument, type Check, type Requirement, type RequirementBasis, type Rubric } from "../schema/case.ts";
 import { messagePreview } from "../core/candidates.ts";
 import { basisOf, refreshDraft, setBasis } from "../core/draft-rule.ts";
@@ -10,7 +10,7 @@ import { findNorm, norms, normsVersion, rubricForNorm } from "../core/norms.ts";
 
 const display = (text: string) => stripVTControlCharacters(text).replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
 
-export async function pick<T>(ui: ExtensionUIContext, title: string, values: readonly T[], label: (value: T, index: number) => string): Promise<T | undefined> {
+export async function pick<T>(ui: WorkflowUI, title: string, values: readonly T[], label: (value: T, index: number) => string): Promise<T | undefined> {
     if (!values.length) return undefined;
     let page = 0;
     while (true) {
@@ -26,7 +26,7 @@ export async function pick<T>(ui: ExtensionUIContext, title: string, values: rea
 }
 
 // 用原生只读选择框分页，不把可编辑文本框伪装成预览。
-export async function showText(ui: ExtensionUIContext, title: string, text: string): Promise<void> {
+export async function showText(ui: WorkflowUI, title: string, text: string): Promise<void> {
     const lines = display(text).split("\n").flatMap((line) => {
         const characters = Array.from(line);
         return characters.length ? Array.from({ length: Math.ceil(characters.length / 70) }, (_, index) => characters.slice(index * 70, (index + 1) * 70).join("")) : [""];
@@ -46,11 +46,11 @@ type PromptEditor = (title: string, prefill?: string, dialogOptions?: object, ed
 
 // OMP 的编辑框默认 Ctrl+Q / Ctrl+Enter 提交；promptStyle 改为回车提交、Shift+Enter 换行，和主输入框一致。
 // Pi 的编辑框本来就是回车提交，只接收前两个参数，多余的参数被忽略。
-export function promptEditor(ui: ExtensionUIContext, title: string, prefill = ""): Promise<string | undefined> {
+export function promptEditor(ui: WorkflowUI, title: string, prefill = ""): Promise<string | undefined> {
     return (ui.editor as PromptEditor).call(ui, title, prefill, undefined, { promptStyle: true });
 }
 
-async function editText(ui: ExtensionUIContext, title: string, prefill = "", required = true): Promise<string | undefined> {
+async function editText(ui: WorkflowUI, title: string, prefill = "", required = true): Promise<string | undefined> {
     while (true) {
         const text = await promptEditor(ui, title, prefill);
         if (text === undefined) return undefined;
@@ -59,7 +59,7 @@ async function editText(ui: ExtensionUIContext, title: string, prefill = "", req
     }
 }
 
-async function editCheck(ui: ExtensionUIContext, current: Check[]): Promise<Check[] | undefined> {
+async function editCheck(ui: WorkflowUI, current: Check[]): Promise<Check[] | undefined> {
     const choices = ["不使用程序约束", "只输出合法 JSON", "必须包含文字", "不能包含文字", "必须匹配正则", "不能匹配正则", "必须调用工具", "不能调用工具"];
     const choice = await ui.select("程序约束（可选；复杂要求可以只使用评审标准）", [...(current.length ? ["保留现有约束"] : []), ...choices]);
     if (!choice) return undefined;
@@ -109,7 +109,7 @@ async function editCheck(ui: ExtensionUIContext, current: Check[]): Promise<Chec
     return [check];
 }
 
-async function editRubric(ui: ExtensionUIContext, initial: Rubric, context: CaseContext, quote: string): Promise<Rubric | undefined> {
+async function editRubric(ui: WorkflowUI, initial: Rubric, context: CaseContext, quote: string): Promise<Rubric | undefined> {
     const rubric = structuredClone(initial);
     for (const field of ["question", "pass", "fail"] as const) {
         const label = { question: "判定问题", pass: "通过条件", fail: "违反条件" }[field];
@@ -153,7 +153,7 @@ const basisLabels = {
     norm: "工作规范表里的一条规范（norm）",
 } as const;
 
-async function chooseBasis(ui: ExtensionUIContext, previous?: RequirementBasis): Promise<RequirementBasis | undefined> {
+async function chooseBasis(ui: WorkflowUI, previous?: RequirementBasis): Promise<RequirementBasis | undefined> {
     const order = (["instruction", "evidence", "norm"] as const).slice().sort((a, b) => (a === previous?.basis ? -1 : b === previous?.basis ? 1 : 0));
     const labels: string[] = order.map((key) => basisLabels[key]);
     const choice = await ui.select("这条要求的依据是什么？（出处都必须在截止点之前）", labels);
@@ -164,7 +164,7 @@ async function chooseBasis(ui: ExtensionUIContext, previous?: RequirementBasis):
     return norm ? { basis: "norm", norm: norm.id, norms_version: normsVersion } : undefined;
 }
 
-async function editRequirement(ui: ExtensionUIContext, context: CaseContext, id: string, previous?: Requirement, previousBasis?: RequirementBasis):
+async function editRequirement(ui: WorkflowUI, context: CaseContext, id: string, previous?: Requirement, previousBasis?: RequirementBasis):
     Promise<{ requirement: Requirement; basis: RequirementBasis } | undefined> {
     const basis = await chooseBasis(ui, previousBasis);
     if (!basis) return undefined;
@@ -238,7 +238,7 @@ export interface ReviewOptions {
     modelDraft?: (doc: CaseDocument) => Promise<number>;
 }
 
-export async function reviewCase(ui: ExtensionUIContext, doc: CaseDocument, context: CaseContext, path: string,
+export async function reviewCase(ui: WorkflowUI, doc: CaseDocument, context: CaseContext, path: string,
     save: (confirmed: CaseDocument) => Promise<void>, options: ReviewOptions = {}): Promise<boolean> {
     let preview = true;
     const link = () => {

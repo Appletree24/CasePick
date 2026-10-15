@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "types": ["react"]
+  },
+  "include": ["src/dsh/client.tsx", "src/dsh/protocol.ts"],
+  "exclude": []
+}

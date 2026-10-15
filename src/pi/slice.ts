@@ -1,6 +1,6 @@
 // 从某个会话的某个截止点生成切片草稿，长程主案例和单条回复两种入口共用。
 
-import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { WorkflowContext } from "../host.ts";
 import { entryTexts, requirementFromProposal, type SliceProposal } from "../core/assist.ts";
 import { draftCase, nextRequirementId, setBasis } from "../core/draft-rule.ts";
 import { duplicateSlices, laterTexts, sliceKeys, type Issue } from "../core/issues.ts";
@@ -42,9 +42,9 @@ export function applyProposals(doc: CaseDocument, context: CaseContext, proposal
     return { added, errors };
 }
 
-export function buildSlice(ctx: ExtensionCommandContext, session: LoadedSession, cutoffEntry: string, version: string, issue?: Issue): SliceDraft {
+export function buildSlice(ctx: WorkflowContext, session: LoadedSession, cutoffEntry: string, version: string, issue?: Issue): SliceDraft {
     const context = contextAt(session.snapshot, cutoffEntry);
-    if (session.external) {
+    if (session.external && context.tools.source === "approximate") {
         context.limitations.push({ field: "task.tools", status: "approximate", note: "截止点不在当前会话；工具定义取自本次扫描时的配置，可能与原会话不同" });
     }
     const doc = draftCase(context, version);
