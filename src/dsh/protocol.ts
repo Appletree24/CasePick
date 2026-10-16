@@ -34,11 +34,48 @@ export type NativeSettings = {
     timeoutSeconds?: number | null;
 };
 
+export interface WorkspaceSession {
+    id: string;
+    title: string;
+    cwd: string;
+    createdAt: number;
+}
+
+export interface WorkspaceEntry {
+    id: string;
+    role: string;
+    content: string;
+    at?: string;
+    toolCalls?: { id: string; name: string; arguments: string }[];
+}
+
+export interface WorkspaceSnapshot {
+    session: WorkspaceSession;
+    watermark: number;
+    entries: WorkspaceEntry[];
+}
+
+export interface WorkspaceLibrary {
+    cases: { id: string; title: string; createdAt: string }[];
+    issues: { id: string; title: string; sessionCount: number; evidenceCount: number; sliceCount: number }[];
+}
+
+export interface WorkspaceLibraryDetail {
+    id: string;
+    title: string;
+    content: string;
+}
+
 // endpoints:
-// start { sessionId, args?: string } -> ViewState
+// start { sessionId, args?: string, cutoffEntry?: string, watermark?: number } -> ViewState
+// watermark binds an immutable native event prefix; required for cutoffEntry.
 // state { sessionId, revision?: number } -> ViewState (long-poll, at most 20s)
 // answer { sessionId, runId, dialogId, value: string | boolean | null } -> ViewState
 // cancel { sessionId, runId } -> ViewState (abort; closes pending dialog)
 // settings {} -> NativeSettings
 // settings/update Partial<NativeSettings> -> NativeSettings (unknown keys or invalid values reject the whole patch;
 //   null maxOutputTokens/timeoutSeconds and "" draftModel/reasoning fall back to /casepick config)
+// sessions/list {} -> WorkspaceSession[]
+// sessions/read { sessionId } -> WorkspaceSnapshot (detached native read-only cut)
+// library {} -> WorkspaceLibrary
+// library/read { kind: "case" | "issue", id: string } -> WorkspaceLibraryDetail

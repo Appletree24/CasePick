@@ -1,0 +1,33 @@
+import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
+import { Value } from "@sinclair/typebox/value";
+import { CaseDocument } from "../src/schema/case.ts";
+import { appendCase, loadCases } from "../src/store/cases.ts";
+
+test("workspace case library reads real confirmed append-only documents, keeps latest revisions and never rewrites the source", async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "casepick-library-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const path = join(directory, "cases.jsonl");
+    assert.deepEqual(await loadCases(path), []);
+    const fixture = await readFile(new URL("./fixtures/detroit/cases.jsonl", import.meta.url), "utf8");
+    const doc: unknown = JSON.parse(fixture.trim().split("\n")[0]);
+    assert.ok(Value.Check(CaseDocument, doc));
+    doc.extensions ??= {};
+    doc.extensions["x-casepick"] ??= { cutoff_entry: "fixture-entry" };
+    doc.extensions["x-casepick"].confirmed_at = "2026-10-12T09:30:00Z";
+    await appendCase(doc, path);
+    const revised = structuredClone(doc);
+    revised.revision += 1;
+    revised.title = "真实已审阅案例的新修订";
+    await appendCase(revised, path);
+    const before = await readFile(path, "utf8");
+    assert.deepEqual(await loadCases(path), [revised]);
+    assert.equal(await readFile(path, "utf8"), before);
+    await writeFile(path, `${before}{broken-json}\n`);
+    await assert.rejects(loadCases(path), /第 3 行不是合法 JSON/);
+    await writeFile(path, `${before}${JSON.stringify({ id: doc.id, title: "不完整记录" })}\n`);
+    await assert.rejects(loadCases(path), /第 3 行格式无效/);
+});

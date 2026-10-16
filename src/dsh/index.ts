@@ -5,19 +5,21 @@ import { RpcId, type ConnectionRpcResult, type ServerResponse } from "@deepseek-
 import type {} from "@deepseek-ai/dsh-settings";
 import type {} from "@deepseek-ai/dsh-config-editor";
 import type { Agent } from "@deepseek-ai/dsh-agent";
-import { SessionId } from "@deepseek-ai/dsh-session";
 import Schema from "@deepseek-ai/schemastery";
 import { parseCommand, helpText } from "../command.ts";
 import { reasoningLevels } from "../core/reasoning.ts";
 import type { WorkflowContext } from "../host.ts";
 import { configure } from "../pi/config-ui.ts";
 import { generateCases } from "../pi/generate.ts";
+import { manageIssues } from "../pi/issues-ui.ts";
 import { parseOverrides } from "../pi/plugin-settings.ts";
 import { loadConfig } from "../store/config.ts";
+import { loadCases } from "../store/cases.ts";
+import { loadIssues } from "../store/issues.ts";
 import { createDshModels } from "./models.ts";
-import { createDshSources } from "./sessions.ts";
+import { captureDshSession, createDshHistorySources, createDshSources, listDshWorkspaceSessions, nativeSessionId, type CapturedDshSession } from "./sessions.ts";
 import { rpcPath } from "./protocol.ts";
-import type { NativeSettings } from "./protocol.ts";
+import type { NativeSettings, WorkspaceLibrary, WorkspaceLibraryDetail } from "./protocol.ts";
 import { parseSettingsPatch } from "./settings-patch.ts";
 import { DialogBridge } from "./ui-bridge.ts";
 
@@ -64,11 +66,11 @@ export function apply(ctx: Context, config: NativePluginConfig): void {
         return bridge;
     };
 
-    async function execute(agent: Agent, args: string, ui: WorkflowContext["ui"], signal: AbortSignal): Promise<void> {
-        const parsed = parseCommand(args);
+    async function execute(source: Agent | CapturedDshSession, args: string, ui: WorkflowContext["ui"], signal: AbortSignal, cutoffEntry?: string): Promise<void> {
+        const parsed = args.trim() === "issues" ? { kind: "run" as const, action: "issues" as const } : parseCommand(args);
         if (parsed.kind === "help") { ui.notify(helpText(parsed.topic), "info"); return; }
         if (parsed.kind === "error") { ui.notify(parsed.message, "error"); return; }
-        if (parsed.action !== "scan" && parsed.action !== "config") {
+        if (parsed.action !== "scan" && parsed.action !== "config" && parsed.action !== "issues") {
             ui.notify("这个命令尚未实现；本次未读取会话、调用模型或保存案例。", "warning");
             return;
         }
@@ -76,21 +78,22 @@ export function apply(ctx: Context, config: NativePluginConfig): void {
         const local = await loadConfig();
         const specs = [settings.get().draftModel];
         if (local.drafting.model.mode === "fixed") specs.push(`${local.drafting.model.provider}/${local.drafting.model.id}`);
-        const models = await createDshModels(ctx, agent, signal, specs);
+        const models = await createDshModels(ctx, source, signal, specs);
         signal.throwIfAborted();
+        const liveAgent = "session" in source ? source : undefined;
         const workflow: WorkflowContext = {
-            cwd: agent.session.header.cwd ?? process.cwd(), hasUI: true,
-            // Maintenance owns the true idle phase, while DSH keeps this public status idle.
-            isIdle: () => agent.status === "idle" && !signal.aborted, ui,
+            cwd: ("session" in source ? source.session.header.cwd : source.header.cwd) ?? process.cwd(), hasUI: true,
+            isIdle: () => (!liveAgent || liveAgent.status === "idle") && !signal.aborted, ui,
             modelRegistry: models.modelRegistry, hostName: "DSH",
             get model() { return models.model; },
-            sources: createDshSources(ctx, agent, signal),
+            sources: "session" in source ? createDshSources(ctx, source, signal) : createDshHistorySources(ctx, source, signal),
             pluginSettings: async () => ({ ...parseOverrides(settings.get()), available: true, source: "DSH 左侧栏 → CasePick" }),
         };
         for (const warning of models.warnings ?? []) ui.notify(warning, "warning");
         ui.setStatus("casepick", undefined);
         if (parsed.action === "config") await configure(workflow);
-        else await generateCases({}, workflow, version);
+        else if (parsed.action === "issues") await manageIssues({}, workflow, version, await workflow.sources!.readCurrent());
+        else await generateCases({}, workflow, version, cutoffEntry);
     }
 
     ctx.commands.register({
@@ -111,7 +114,33 @@ export function apply(ctx: Context, config: NativePluginConfig): void {
                 await settings.update(parseSettingsPatch(payload));
                 return { ok: true, value: settings.get() };
             }
-            const sessionId = stringField(payload, "sessionId");
+            if (endpoint === "sessions/list") return { ok: true, value: await listDshWorkspaceSessions(ctx, signal) };
+            if (endpoint === "sessions/read") {
+                const captured = await captureDshSession(ctx, stringField(payload, "sessionId"), signal);
+                return { ok: true, value: captured.workspace };
+            }
+            if (endpoint === "library") {
+                const [cases, issues] = await Promise.all([loadCases(), loadIssues()]);
+                const library: WorkspaceLibrary = {
+                    cases: cases.map((doc) => ({ id: doc.id, title: doc.title, createdAt: doc.provenance.created_at })),
+                    issues: issues.map((issue) => ({
+                        id: issue.id, title: issue.title, sessionCount: issue.sessions.length,
+                        evidenceCount: issue.evidence.length, sliceCount: issue.slices.length,
+                    })),
+                };
+                return { ok: true, value: library };
+            }
+            if (endpoint === "library/read") {
+                const kind = payload.kind;
+                if (kind !== "case" && kind !== "issue") throw new TypeError("kind 必须是 case 或 issue");
+                const id = stringField(payload, "id");
+                const documents = kind === "case" ? await loadCases() : await loadIssues();
+                const document = documents.find((item) => item.id === id);
+                if (!document) throw new Error("记录不存在，请刷新案例库");
+                const detail: WorkspaceLibraryDetail = { id: document.id, title: document.title, content: JSON.stringify(document, null, 2) };
+                return { ok: true, value: detail };
+            }
+            const sessionId = nativeSessionId(stringField(payload, "sessionId"));
             const bridge = bridgeFor(sessionId);
             if (endpoint === "state") {
                 const revision = payload.revision;
@@ -119,13 +148,20 @@ export function apply(ctx: Context, config: NativePluginConfig): void {
                 return { ok: true, value: await bridge.wait(revision as number | undefined, signal) };
             }
             if (endpoint === "start") {
-                const agent = ctx.agents.get(SessionId(sessionId));
-                if (!agent) throw new Error("当前会话没有活动 Agent，请先在 DSH 中打开该会话");
-                if (payload.args !== undefined && typeof payload.args !== "string") throw new TypeError("args 必须是文字");
+                const args = payload.args;
+                const cutoffEntry = payload.cutoffEntry;
+                if (args !== undefined && typeof args !== "string") throw new TypeError("args 必须是文字");
+                if (cutoffEntry !== undefined && (typeof cutoffEntry !== "string" || !/^dsh:\d+$/.test(cutoffEntry))) throw new TypeError("cutoffEntry 必须是原生消息 ID");
+                const watermark = payload.watermark;
+                if (watermark !== undefined && (typeof watermark !== "number" || !Number.isSafeInteger(watermark) || watermark < -1)) throw new TypeError("watermark 必须是有效的原生快照截止位置");
+                if (cutoffEntry !== undefined && watermark === undefined) throw new TypeError("审阅指定回复必须提供所显示快照的 watermark");
                 return {
                     ok: true,
-                    value: bridge.startMaintenance(agent, (ui, operationSignal) =>
-                        execute(agent, payload.args as string | undefined ?? "", ui, operationSignal)),
+                    value: bridge.start(async (ui, operationSignal) => {
+                        const captured = await captureDshSession(ctx, sessionId, operationSignal, watermark);
+                        operationSignal.throwIfAborted();
+                        await execute(captured, args ?? "", ui, operationSignal, cutoffEntry);
+                    }),
                 };
             }
             const runId = stringField(payload, "runId");

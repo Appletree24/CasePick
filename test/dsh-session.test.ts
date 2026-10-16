@@ -4,9 +4,12 @@ import type { Context } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import { createAssistantMessage, createDeveloperMessage, createSystemMessage, createToolResultMessage, createUserMessage, freezeMessage, ToolCallId, type Message as NativeMessage } from "@deepseek-ai/dsh-llm";
 import { deriveEventMessage, foldRequestHeader, foldSurface, SESSION_FORMAT_VERSION, SessionId, SessionSeq, type SessionEvent, type SessionHeader, type SessionMessageProjection } from "@deepseek-ai/dsh-session";
-import { createDshSources } from "../src/dsh/sessions.ts";
+import { captureDshSession, createDshHistorySources, createDshSources } from "../src/dsh/sessions.ts";
 import { sessionKeyOf } from "../src/pi/read-session.ts";
 import { sourceReferences } from "../src/pi/sources.ts";
+import type { WorkflowContext } from "../src/host.ts";
+import { DialogBridge } from "../src/dsh/ui-bridge.ts";
+import { generateCases } from "../src/pi/generate.ts";
 
 declare module "@deepseek-ai/dsh-llm" {
     interface MessageSourceMap {
@@ -220,4 +223,111 @@ test("DSH format4 tool results keep the top-level native call identity and rejec
         ...event.data.message, toolCallId: ToolCallId("wrong-call"),
     } } };
     await assert.rejects(f.source.readCurrent(), /调用关联无效/);
+});
+
+test("historical workspace captures native roles and exact cutoff without an Agent, detaches leases and reuses the selected source", async () => {
+    const f = fixture();
+    let disposed = 0;
+    let reads = 0;
+    const modelSelection = { next: { provider: "native", model: "selected" }, lastUsed: { provider: "native", model: "previous" } };
+    const ctx = {
+        sessions: f.ctx.sessions,
+        sessionQuery: {
+            async observeSession(id: string, options: { projectionMode: string }) {
+                assert.equal(id, f.header.id);
+                assert.equal(options.projectionMode, "all");
+                reads++;
+                return {
+                    header: f.header, events: f.events, cursor: f.events.length - 1,
+                    projections: { values: { title: "原始历史标题", modelSelection } },
+                    [Symbol.dispose]() { disposed++; },
+                };
+            },
+        },
+    } as unknown as Context;
+    const before = structuredClone(f.events);
+    const signal = new AbortController().signal;
+    const captured = await captureDshSession(ctx, f.header.id, signal);
+    assert.equal("agents" in ctx, false);
+    assert.equal(disposed, 1);
+    assert.equal(captured.workspace.session.id, f.header.id);
+    assert.equal(captured.workspace.session.title, "原始历史标题");
+    assert.equal(captured.workspace.session.createdAt, f.header.createdAt);
+    assert.deepEqual(captured.workspace.entries.map((entry) => entry.role), ["system", "user", "assistant", "tool", "assistant", "user"]);
+    assert.equal(captured.workspace.entries[2].toolCalls?.[0].arguments, '{ "path" : "a" }');
+    assert.equal(captured.workspace.entries.find((entry) => entry.id === `dsh:${f.candidate}`)?.content, "出错回复");
+    assert.deepEqual(f.events, before);
+    const context = captured.snapshot.contextAt(`dsh:${f.candidate}`);
+    const sources = createDshHistorySources(ctx, captured, signal);
+    f.add("user/message", createUserMessage({ content: [{ type: "text", text: "捕获后不应混入" }], source: { kind: "user" } }), { surfaceOp: "append" });
+    modelSelection.next.model = "changed-after-capture";
+    assert.equal(captured.modelSelection?.next?.model, "selected");
+    assert.equal(await sources.readCurrent(), captured.snapshot);
+    assert.equal((await sources.load(f.header.id)).snapshot, captured.snapshot);
+    assert.equal((await sources.load(`dsh:${f.header.id}`)).snapshot, captured.snapshot);
+    assert.equal(sources.current(captured.snapshot).external, false);
+    assert.equal(reads, 1);
+    assert.deepEqual(captured.snapshot.contextAt(`dsh:${f.candidate}`), context);
+
+    // Exercise the common review flow through the real bridge, without an Agent,
+    // candidate picker, provider or persistence write.
+    const bridge = new DialogBridge(f.header.id);
+    const run = bridge.begin()!;
+    const workflow: WorkflowContext = {
+        cwd: f.header.cwd!, hasUI: true, isIdle: () => !run.signal.aborted,
+        ui: run.ui, sources,
+        modelRegistry: { getAvailable: () => [], find: () => undefined, hasConfiguredAuth: () => false },
+    };
+    const review = generateCases({}, workflow, "test", `dsh:${f.candidate}`);
+    const preview = await bridge.wait(bridge.snapshot().revision, signal);
+    assert.match(preview.dialog!.title, /^审阅案例/);
+    const answered = bridge.answer(run.id, preview.dialog!.id, "返回");
+    const actions = await bridge.wait(answered.revision, signal);
+    assert.ok(actions.dialog!.options?.includes("用模型起草要求"));
+    bridge.answer(run.id, actions.dialog!.id, "返回候选（暂不保存）");
+    await review;
+    await assert.rejects(generateCases({}, workflow, "test", `dsh:${f.user}`), /原始 assistant/);
+    bridge.finish(run.id);
+    assert.equal(bridge.snapshot().notices.at(-1)?.text, "本次未保存案例。");
+    assert.deepEqual(f.events, [...before, f.events.at(-1)]);
+    assert.equal(reads, 1);
+    bridge.dispose();
+});
+
+test("historical workspace watermark replays the displayed prefix despite later appends or surface replacement", async () => {
+    const f = fixture();
+    let disposed = 0;
+    const ctx = {
+        sessions: f.ctx.sessions,
+        sessionQuery: {
+            async observeSession() {
+                return {
+                    header: f.header, events: f.events, cursor: f.events.length - 1,
+                    [Symbol.dispose]() { disposed++; },
+                };
+            },
+        },
+    } as unknown as Context;
+    const signal = new AbortController().signal;
+    const displayed = await captureDshSession(ctx, f.header.id, signal);
+    const before = displayed.snapshot.contextAt(`dsh:${f.candidate}`);
+    f.add("user/message", createUserMessage({ content: [{ type: "text", text: "新纠正不能泄漏到所显示快照" }], source: { kind: "user" } }), { surfaceOp: "append" });
+    f.add("system/message", { turn: 2, step: 0, message: createSystemMessage("未来系统提示") }, { surfaceOp: { op: "replace", startSeq: f.system, endSeq: f.system }, sourceEventSeqs: [f.system] });
+    const later = f.add("assistant/message", { turn: 2, step: 0, stream: [], message: createAssistantMessage({
+        source: { provider: "native", model: "next" }, content: [{ type: "text", text: "未来回复" }],
+    }) }, { surfaceOp: "append" });
+    const rawBefore = structuredClone(f.events);
+    const selected = await captureDshSession(ctx, f.header.id, signal, displayed.workspace.watermark);
+    assert.deepEqual(selected.workspace.entries, displayed.workspace.entries);
+    assert.deepEqual(selected.snapshot.contextAt(`dsh:${f.candidate}`), before);
+    assert.throws(() => selected.snapshot.contextAt(`dsh:${later}`), /原始 assistant/);
+    assert.deepEqual(f.events, rawBefore);
+    await assert.rejects(captureDshSession(ctx, f.header.id, signal, f.events.length), /截止位置已失效/);
+    await assert.rejects(captureDshSession(ctx, f.header.id, signal, -2), /截止位置已失效/);
+    await assert.rejects(captureDshSession(ctx, f.header.id, signal, 1.5), /截止位置已失效/);
+    assert.equal(disposed, 5);
+    const empty = await captureDshSession(ctx, f.header.id, signal, -1);
+    assert.deepEqual(empty.workspace.entries, []);
+    assert.equal(empty.workspace.watermark, -1);
+    assert.equal(disposed, 6);
 });

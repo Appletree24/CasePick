@@ -443,7 +443,7 @@ CasePick 配置
 
 命令解析在 `src/command.ts`，`src/extension.ts` 负责注册和分发。
 
-**DSH 当前实现：** 原生 `/casepick`、`/casepick config`、Web 弹窗审阅、跨会话主案例、模型找证据/提议切片/起草要求及 Debug 已接入同一整理流程。源会话只读；DSH 执行命令本身可追加 `command/run` / `command/done`，不能将“不插入对话消息”表述为“原始日志绝不新增事件”。模型内容准备仍沿用现有分段策略，本次不实现长会话上下文预算设计。
+**DSH 当前实现：** 左侧栏 CasePick 进入完整工作台，提供独立会话目录、时间线与截止点选择、内联审阅、案例/主问题资产库及设置子页。历史会话读取与工作流不要求活跃 Agent，不 resume/fork 源会话；`/casepick` 可定位接收命令的会话。模型找证据/提议切片/起草要求、Debug 与确认保存均在页内完成。DSH 执行命令本身仍可追加 `command/run` / `command/done`，不能将“不插入对话消息”表述为“原始日志绝不新增事件”。模型内容准备仍沿用现有分段策略，本次不实现长会话上下文预算设计。
 
 **当前实现（2026-10-13，第二次更新）：** 新增起草模型配置（`/casepick config`，默认跟随当前模型、思考等级 low）、审阅时"用模型起草要求"、三种期望依据，以及"整理长程问题"入口（[长程任务的案例切片](long-trajectory-slicing.md)）。调用模型时，Pi 上用 `modelRegistry.streamSimple`，由宿主处理请求时的认证；宿主没有这个方法时（OMP），用 `getApiKeyAndHeaders` 加 `@earendil-works/pi-ai` 的 `completeSimple`。`mark`、`cases`、`export` 仍是待实现入口。
 
@@ -464,8 +464,10 @@ src/
   host.ts               共用 UI、模型目录、会话来源与设置能力
   dsh/
     index.ts            原生命令、设置、已认证交互路由与运行生命周期
-    client.tsx          Web slash action、审阅弹窗与插件设置卡片
-    protocol.ts         浏览器/Host 的对话及状态协议
+    client.tsx          原生命令到工作台的交接、内联交互与设置表单
+    workspace.tsx       会话目录、历史时间线、截止点选择与真实资产详情
+    styles.ts           宿主主题与响应式工作台布局
+    protocol.ts         浏览器/Host 的会话快照、资产与运行状态协议
     ui-bridge.ts        WorkflowUI 到可取消交互状态机的适配
     sessions.ts         原生事件转换、历史截止点恢复和跨会话只读查询
     models.ts           原生模型目录、独立请求流与用量转换
@@ -507,18 +509,18 @@ scripts/
   build-dsh.mjs         DSH Host ESM 与浏览器 module-table 工厂构建
 ```
 
-技术选型：TypeScript strict 模式；TypeBox 定义 schema，运行时用 TypeBox 自带的校验（不引入 Ajv 运行时依赖）；测试里用 Ajv 跑 Detroit 的 JSON Schema，核对 CasePick 的产出 Detroit 一定接受；Node 自带的 `node:test` 写单元测试（Node 22.18+ 直接运行 .ts，不引入测试依赖）；起草模型请求用宿主的模型注册表和 `completeSimple`，不自己管理端点和密钥；不引入数据库。
+技术选型：TypeScript strict 模式；TypeBox 定义 schema，运行时用 TypeBox 自带的校验（不引入 Ajv 运行时依赖）；测试里用 Ajv 跑 Detroit 的 JSON Schema，核对 CasePick 的产出 Detroit 一定接受；Node 自带的 `node:test` 写单元测试（Node 22.19+ 直接运行 .ts，不引入测试依赖）；起草模型请求用宿主的模型注册表和 `completeSimple`，不自己管理端点和密钥；不引入数据库。
 
 `core/`、`store/` 与案例协议不因宿主增加而分叉。Pi/OMP 的 SDK 只在 `src/extension.ts` 中静态绑定，通过 `WorkflowContext.piSdk` 注入；不要在共用流程里动态导入 SDK，这会绕过 OMP 对 Pi 包名的兼容解析。DSH 提供自己的 `sources`、模型目录和 `pluginSettings`，原生运行路径不需要加载 Pi SDK。
 
 ### DSH 适配契约
 
-- **发行与入口**：CasePick `0.1.1` 的基线为 DSH CLI / SDK `0.2.0-rc.2`，原生 peer 精确匹配，不以版本豁免替代迁移。`package.json` 保留 `pi.extensions` / `omp.extensions`，另声明 DSH bundle patch、Host 主入口及 Web Client 入口。浏览器产物是 DSH `__ModuleLoader__` 的模块工厂，不是独立 ESM 页面；React 与 Modal 由宿主提供。安装命令见 README。
+- **发行与入口**：CasePick `0.1.1` 的基线为 DSH CLI / SDK `0.2.0-rc.2`，原生 peer 精确匹配，不以版本豁免替代迁移。`package.json` 保留 `pi.extensions` / `omp.extensions`，另声明 DSH bundle patch、Host 主入口及 Web Client 入口。浏览器产物是 DSH `__ModuleLoader__` 的模块工厂；React、主题与基础组件由宿主提供。`sidebar.panellist` 和 `main` 使用同一 `casepick` 键注册完整工作台，不新增 HTTP 服务或另一个网站。
 - **历史截止点**：`SessionSnapshot.contextAt()` 由宿主实现。Pi/OMP 用 `buildSessionContext(branch, parentId)`；DSH 冻结原生事件快照，在每个历史前缀上重放 `ctx.sessions.messageProjections`，并在所选 assistant 之前的前缀上调用 `foldSurface` 与 `foldRequestHeader`，不能用最新投影倒推旧上下文。session format 4 的工具结果读取原生 `role: "tool"`、顶层 `toolCallId` 与内容块，不再读取旧的嵌套 `tool-result` 块；矛盾的调用关联拒绝转换。存在历史 request header 时，缺省 tools 表示空工具，不套用当前配置。普通 developer 指令合并到 approximate 的 `task.system` 并记录层级、位置损失；纯工具更新只在历史工具集合可由 header 重建时省略，否则拒绝恢复。`deferLoading` 等不可移植声明与供应商私有指令、中间件临时改写均记录局限。
-- **只读来源**：DSH 的会话定位符为 `dsh:<session-id>`，消息定位符为 `dsh:<seq>`；session key 仍按定位符摘要生成。其他会话用 `sessionQuery.observeSession(..., {projectionMode: "none"})` 读取，并在 finally 中释放 lease，不 resume/fork Agent。原生 session-reference 缺少精确 source entry 时，仅保留会话和捕获水位用于导航，不构造假截止点。
+- **只读来源**：DSH 会话定位符为 `dsh:<session-id>`，消息定位符为 `dsh:<seq>`。工作台通过 `sessions/list`、`sessions/read` 取得真实目录、标题、原生角色与快照水位。读取使用 `sessionQuery.observeSession` 获取原生事件及投影，finally 释放 lease；直接截止点操作必须携带页面水位，服务端裁定不可变事件前缀，一次运行冻结来源快照与投影解释器列表，关联来源首次加载后复用。不存在的水位或非助手截止点明确拒绝，不以最新记录悄悄替代。无须启动源 Agent；原生 session-reference 缺少精确 source entry 时仅保留会话及捕获水位用于导航，不构造假截止点。
 - **模型调用**：通过原生 LLM 模型目录解析当前或固定模型，用 `prepareCall` 和 `BlockAssembler` 消费流。跟随当前模型时读取原生 `modelSelection` 投影，优先待用选择，其次最近请求，最后宿主默认；不能用恢复会话后可能过期的 `Agent.options` 代替浏览器选择。每次建立独立的 `source.kind: "casepick"` user message，不设置 session ID、tools，也不调用 Agent/subagent。凭据留在 DSH adapter；不复制 API key 或 base URL。原生 reasoning effort ID 只按模型明确声明的能力映射，不把不透明名称猜成 high 等固定等级。失败、取消、缺少终止事件不能当作成功空结果；`length` 即使产生合法 JSON 也不能进入正常提议审阅。
-- **交互与取消**：复用 DSH Connection 已鉴权的 `/api/casepick` 精确 Fetch 路由，使用公开的 `ClientRequest` / `ServerResponse` JSON 信封和浏览器 `connection.rpc.call()`，不占用网关唯一的 `/api` interceptor，不启动额外 HTTP 服务。该基线 SDK 的 `rpc.handle()` 在直接顶层调用及显式子注入中均出现捕获 owner 无 `webServer` 注入的失败，不能用“插件激活”代替真实请求验证。工作流通过 `agent.runMaintenance()` 同步预留真正的空闲阶段；Agent 已有工作时拒绝启动。每个接收会话独立维护 run ID、dialog ID、revision，合并 maintenance 与弹窗取消信号；旧窗口的回答与取消不能作用于新运行，关闭弹窗取消 CasePick 而不终止聊天 Agent。长正文、原始回复和通知可滚动查看，不塞进 Modal 标题。
-- **设置与诊断**：使用 `.volatile()` 配置的 `config.get()` 读取当前值，通过 `configEditor.entries()` 中与当前 fiber 精确匹配的 entry ID 调用 `settings.update(id, patch)` 持久化，不再使用旧版 `settings.register/get`。可空覆盖项在原生序列化中可能缺省，按“沿用 CasePick 配置”处理。关闭自动设置卡片，不再占用 Settings → Built-in plugins：浏览器入口按官方全局页模式，以同一 id `casepick` 注册 `sidebar.panellist` 行与 `main` 键控面板，在左侧栏提供独立的 CasePick 页。该页暂存 5 项原生设置的编辑，保存时只提交变化字段；宿主 `settings/update` 用与页面共享的 `parseSettingsPatch` 校验，未知字段或任一非法值整体拒绝，不做部分写入。配置向导入口只绑定 `retainedBy.mainView > 0` 的会话，没有选中会话或存在未保存修改时禁用，不能用目录首条会话兜底；向导弹窗挂在会话输入区，因此先 `layout.selectPanel(null)` 回到会话再启动。不加载 OMP 设置或模拟 OMP 角色。Debug 复用同一请求、原始回复、解析与核对菜单；原文只驻留当前交互内存，不另存诊断文件。
+- **交互与取消**：复用 Connection 已鉴权的 `/api/casepick` 精确 Fetch 路由及公开 JSON 信封，不占用网关唯一 interceptor。工作台独立按来源会话维护 run ID、dialog ID、revision 和取消信号，不取得聊天 Agent maintenance；原生 slash command 的接收上下文仍保留 maintenance 互斥。重复启动、过时回答与取消均按身份隔离。命令观察器仅负责将接收会话定位到全局页面；所有选择、编辑、外发确认、Debug、预览与保存由内联面板呈现，完整上下文与较早运行记录可展开查看。会话选择独立于原生聊天选中项，切换页面不能把 A 会话的结果应用于 B。
+- **设置与资产**：使用 `.volatile()` 的 `config.get()`，通过与当前 fiber 匹配的 config entry ID 调用 `settings.update`；表单只提交变更字段，共用 `parseSettingsPatch` 整体校验。设置收进 CasePick 子页，配置向导使用工作区明确选择的会话并内联呈现，不再 `layout.selectPanel(null)`。`library` / `library/read` 读取真实 cases/issues，案例校验后按 ID 选择最新 revision，不改写原存储；打开资产页重新读取，避免仍在进行的工作流已保存但列表过时。Debug 原文只在本次运行内存中，不另存文件；不加载 OMP 设置或模拟 OMP 角色。
 
 
 ## 14. 分期

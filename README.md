@@ -39,11 +39,14 @@ dsh plugin --profile casepick add "link:$PWD"
 dsh --profile casepick
 ```
 
-在 DSH 中打开需要整理的会话，使用 `/casepick` 或 `/casepick config`。原生浏览器弹窗提供与 Pi/OMP 相同的审阅、编辑、确认保存和长程问题流程。会话列表来自 DSH `sessionQuery`；手动定位其他会话时使用原生 session ID 或 `dsh:<session-id>`，不输入 Pi JSONL 路径。
+从 DSH 左侧栏进入 **CasePick** 完整工作台，或使用 `/casepick` 定位命令所在的会话。工作台中的会话选择独立于聊天窗口：无需先打开、恢复或分叉历史会话，也不要求它有活跃 Agent。
 
-选择列表支持 ↑ / ↓、Home / End 移动焦点，Enter 选择；编辑框使用 Enter 提交、Shift+Enter 换行。长内容在弹窗内滚动，底部操作按钮保持可见。提示、警告和错误使用不同的图标与主题颜色。
+- **会话审阅**：搜索标题、路径或 ID，浏览原文、角色与工具调用，选中助手回复直接审阅，或扫描整个会话。读取时记录快照水位，后续新增消息不会混入已选历史输入。
+- **审阅与保存**：右侧面板完成证据、切片、模型起草、外发确认、预览、Debug 和人工确认保存，不再弹窗或切回聊天。当前步骤与完整正文直接展示，上下文及较早运行记录折叠保留。
+- **已存案例 / 主问题**：查看真实本地资产与完整保存内容；主问题可继续关联多个会话、整理证据和切片。
+- **设置**：原有调试模式、起草模型、思考等级、输出上限及超时收进工作台子页。编辑后点击 **保存** 才写入 DSH；配置向导也在工作台内完成。
 
-CasePick 在 DSH 左侧栏有独立的 **CasePick** 页（与“插件”“自动化任务”等全局页并列），用于修改 DSH 原生设置：调试模式、起草模型、思考等级、单次输出上限及超时。编辑后点击 **保存** 才写入；填写的项优先于 `/casepick config`，留空的项沿用它。页面上的 **在当前会话中打开 /casepick config** 会回到左侧栏选中的会话并打开配置向导。
+选择列表支持 ↑ / ↓、Home / End 移动焦点，Enter 选择；编辑框使用 Enter 提交、Shift+Enter 换行。主界面适配深色主题与窄窗口，运行中可以显式结束任务。手动关联会话时使用原生 session ID 或 `dsh:<session-id>`，不输入 Pi JSONL 路径。
 
 兼容基线：CasePick `0.1.1` 对应 DSH CLI 与 SDK `0.2.0-rc.2`，DSH peer 版本精确匹配。旧版 CasePick `0.1.0` 的 `0.1.5-rc.2` 声明不能直接用于该宿主；升级插件并重新构建、安装及重启，不要用 `allow-version` 绕过检查。更新已有安装时沿用原 profile，无须删除 profile 或本地案例数据；安装来源从 tarball 改为链接时，先停止 DSH，再移除原插件并重新安装链接，避免继续使用旧包。
 
@@ -51,7 +54,7 @@ CasePick 在 DSH 左侧栏有独立的 **CasePick** 页（与“插件”“自�
 
 ### 整理与保存
 
-Pi/OMP 用 `/resume` 打开需要整理的会话；DSH 从侧栏打开会话。等回复结束后执行：
+Pi/OMP 用 `/resume` 打开需要整理的会话，等回复结束后执行以下命令。DSH 可直接在 CasePick 工作台选择历史会话，也可从聊天中使用相同命令进入：
 
 ```text
 /casepick
@@ -76,7 +79,7 @@ Pi/OMP 用 `/resume` 打开需要整理的会话；DSH 从侧栏打开会话。�
 
 Debug 默认关闭。OMP 中将 CasePick 装成插件后，在 **Settings → Plugins → casepick → debug** 切换开关；也可以在 `/casepick config` 中选择 **Debug 模式**。Plugins 中显式设置的值优先，包括 `false`；被覆盖时，`/casepick config` 会提示到 Plugins 修改。配置变更在下一次模型辅助调用时生效。
 
-DSH `0.2` 中在左侧栏 **CasePick** 页切换 **调试模式** 并保存；该开关由 DSH 原生设置持久化，优先于 CasePick 本地配置。被覆盖时，`/casepick config` 会提示到该页修改。DSH 不读取 OMP 的 Plugins 设置，也不会因缺少 OMP API 而出现设置读取警告。
+DSH `0.2` 中在左侧栏 **CasePick → 设置** 切换 **调试模式** 并保存；该开关由 DSH 原生设置持久化，优先于 CasePick 本地配置。被覆盖时，`/casepick config` 会提示到该页修改。`current` 模型指工作区所选来源会话的待用或最近使用模型，而不是另一聊天窗口的模型；无法取得时使用宿主默认值。DSH 不读取 OMP 的 Plugins 设置。
 
 开启后，“用模型找证据”“用模型提议切片”和“用模型起草要求”会在每个请求结束后打开 Debug 菜单，可查看：
 

@@ -180,3 +180,55 @@ test("已经取消的 maintenance 不执行工作流，并且完成后的旧 UI 
     assert.equal(bridge.snapshot().dialog, undefined);
     bridge.dispose();
 });
+
+test("independent history runs need no Agent, fence duplicate starts and cancel only their own source job", async () => {
+    const first = new DialogBridge("history-a");
+    const second = new DialogBridge("history-b");
+    let calls = 0;
+    let firstSignal: AbortSignal | undefined;
+    let secondSignal: AbortSignal | undefined;
+    const firstFinished = Promise.withResolvers<void>();
+    const secondFinished = Promise.withResolvers<void>();
+    const a = first.start(async (ui, signal) => {
+        calls++;
+        firstSignal = signal;
+        try { await ui.editor("历史 A", ""); } finally { firstFinished.resolve(); }
+    });
+    const duplicate = first.start(async () => { calls++; });
+    assert.equal(duplicate.runId, a.runId);
+    assert.equal(calls, 1);
+    const b = second.start(async (ui, signal) => {
+        secondSignal = signal;
+        try { await ui.confirm("历史 B", ""); } finally { secondFinished.resolve(); }
+    });
+    assert.equal(a.dialog?.kind, "editor");
+    assert.equal(b.dialog?.kind, "confirm");
+    first.cancel(a.runId!);
+    await firstFinished.promise;
+    assert.equal(firstSignal?.aborted, true);
+    assert.equal(secondSignal?.aborted, false);
+    assert.equal(second.snapshot().dialog?.id, b.dialog?.id);
+    assert.throws(() => first.answer(a.runId!, a.dialog!.id, "stale"), /失效/);
+    second.answer(b.runId!, b.dialog!.id, false);
+    await secondFinished.promise;
+    first.dispose();
+    second.dispose();
+});
+
+test("late independent historical source completion cannot finish a replacement workspace run", async () => {
+    const bridge = new DialogBridge("history");
+    const release = Promise.withResolvers<void>();
+    let oldUI: WorkflowUI | undefined;
+    const old = bridge.start(async (ui) => { oldUI = ui; await release.promise; });
+    bridge.cancel(old.runId!);
+    const current = bridge.start(async (ui) => { await ui.confirm("当前保存", ""); });
+    release.resolve();
+    await release.promise;
+    oldUI!.notify("迟到的历史错误", "error");
+    oldUI!.setStatus("casepick", "迟到状态");
+    assert.equal(bridge.snapshot().runId, current.runId);
+    assert.equal(bridge.snapshot().dialog?.id, current.dialog?.id);
+    assert.deepEqual(bridge.snapshot().notices, []);
+    bridge.cancel(current.runId!);
+    bridge.dispose();
+});

@@ -32,6 +32,21 @@ export class DialogBridge {
         };
     }
 
+    // Historical-source work belongs to this panel run, not to an unrelated Agent.
+    start(task: (ui: WorkflowUI, signal: AbortSignal) => Promise<void>): ViewState {
+        const run = this.begin();
+        if (!run) return this.snapshot();
+        try {
+            void task(run.ui, run.signal).then(
+                () => this.finish(run.id),
+                (error: unknown) => this.finish(run.id, error),
+            );
+        } catch (error) {
+            this.finish(run.id, error);
+        }
+        return this.snapshot();
+    }
+
     startMaintenance(
         agent: Pick<Agent, "ctx" | "runMaintenance">,
         task: (ui: WorkflowUI, signal: AbortSignal) => Promise<void>,

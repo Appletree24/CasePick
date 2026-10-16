@@ -168,3 +168,25 @@ test("caller cancellation, timeout and receiving-command cancellation stop only 
     await assert.rejects(pending, /command cancelled/);
     assert.deepEqual(f.sourceEvents, []);
 });
+
+test("historical helper models follow selected-session next, last and default without any active Agent or live projection", async (t) => {
+    const f = await setup([]);
+    t.after(f.unregister);
+    f.selection.value = undefined;
+    const source = { modelSelection: {
+        next: { provider: "native", model: "history-pending" },
+        lastUsed: { provider: "native", model: "history-last" },
+    } };
+    const selected = await createDshModels(f.ctx, source, f.controller.signal, ["native/history-last"]);
+    assert.equal(selected.model?.id, "history-pending");
+    assert.ok(selected.model);
+    await selected.modelRegistry.streamSimple!(selected.model, f.prompt).result();
+    assert.equal(f.provider.calls[0].model, "history-pending");
+    assert.equal(f.provider.calls[0].sessionId, undefined);
+    assert.equal(f.provider.calls[0].tools, undefined);
+    const last = await createDshModels(f.ctx, { modelSelection: { next: null, lastUsed: source.modelSelection.lastUsed } }, f.controller.signal);
+    assert.equal(last.model?.id, "history-last");
+    const fallback = await createDshModels(f.ctx, {}, f.controller.signal);
+    assert.equal(fallback.model?.id, "private/model");
+    assert.deepEqual(f.sourceEvents, []);
+});

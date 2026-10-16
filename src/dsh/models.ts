@@ -3,7 +3,7 @@ import type { Agent } from "@deepseek-ai/dsh-agent";
 import { BlockAssembler, createUserMessage, ReasoningEffortId, type LlmResolvedModelInfo } from "@deepseek-ai/dsh-llm";
 import type {} from "@deepseek-ai/dsh-agent-default-model";
 import type {} from "@deepseek-ai/dsh-session-projection";
-import type {} from "@deepseek-ai/dsh-api-session-controller/types";
+import type { ModelSelection, ModelSelectionProjection } from "@deepseek-ai/dsh-api-session-controller/types";
 import type { Api, AssistantMessage, Context, Model } from "@earendil-works/pi-ai";
 import type { WorkflowModelRegistry } from "../host.ts";
 
@@ -16,21 +16,28 @@ declare module "@deepseek-ai/dsh-llm" {
 // These are the shared UI's exact vocabulary, not aliases for native opaque effort IDs.
 const levels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
-function currentSelection(ctx: DshContext, agent: Agent) {
-    const state = ctx.sessionProjections.stateOf(agent.session, "modelSelection");
+export interface HistoricalModelSource {
+    modelSelection?: ModelSelectionProjection;
+}
+
+function currentSelection(ctx: DshContext, source: Agent | HistoricalModelSource): ModelSelection {
+    if (!("session" in source)) {
+        return source.modelSelection?.next ?? source.modelSelection?.lastUsed ?? ctx.agentDefaultModel.currentSelection();
+    }
+    const state = ctx.sessionProjections.stateOf(source.session, "modelSelection");
     if (!state) throw new Error("DSH 缺少 modelSelection 投影，无法确定当前模型");
     // Browser model choice is pending -> last used -> host default. Agent.options
     // can retain the bootstrap default after a historical Session is reopened.
     return state.pending ?? state.lastUsed ?? ctx.agentDefaultModel.currentSelection();
 }
 
-export async function createDshModels(ctx: DshContext, agent: Agent, signal: AbortSignal, requestedSpecs: readonly string[] = []): Promise<{ model?: Model<Api>; modelRegistry: WorkflowModelRegistry; warnings?: string[] }> {
+export async function createDshModels(ctx: DshContext, source: Agent | HistoricalModelSource, signal: AbortSignal, requestedSpecs: readonly string[] = []): Promise<{ model?: Model<Api>; modelRegistry: WorkflowModelRegistry; warnings?: string[] }> {
     signal.throwIfAborted();
     const nativeModels = new Map<string, LlmResolvedModelInfo>();
     const models = new Map<string, Model<Api>>();
     const warnings: string[] = [];
     const providers = ctx.llm.listProviders();
-    const current = currentSelection(ctx, agent);
+    const current = currentSelection(ctx, source);
     const currentKey = `${current.provider}/${current.model}`;
     const requested = new Set(requestedSpecs.filter((spec) => spec !== "current" && spec !== "off"));
     requested.add(currentKey);
@@ -147,7 +154,7 @@ export async function createDshModels(ctx: DshContext, agent: Agent, signal: Abo
     signal.throwIfAborted();
     return {
         get model() {
-            const current = currentSelection(ctx, agent);
+            const current = currentSelection(ctx, source);
             return models.get(`${current.provider}/${current.model}`);
         },
         modelRegistry, ...(warnings.length ? { warnings } : {}),

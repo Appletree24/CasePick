@@ -9,10 +9,114 @@ import type { CaseContext, RecordedEntry } from "../core/messages.ts";
 import type { Message, ToolCall } from "../schema/case.ts";
 import { sessionKeyOf, type SessionSnapshot } from "../pi/read-session.ts";
 import type { LoadedSession, SourceReference } from "../pi/sources.ts";
+import type { HistoricalModelSource } from "./models.ts";
+import type { WorkspaceEntry, WorkspaceSession, WorkspaceSnapshot } from "./protocol.ts";
 
 const locator = (id: string) => `dsh:${id}`;
 const eventId = (event: SessionEvent) => `dsh:${event.seq}`;
 const invalidSessionId = /[\/\\\u0000-\u001f]/;
+
+export interface CapturedDshSession extends HistoricalModelSource {
+    header: SessionHeader;
+    snapshot: SessionSnapshot;
+    workspace: WorkspaceSnapshot;
+}
+
+export function nativeSessionId(location: string): SessionId {
+    const id = location.startsWith("dsh:") ? location.slice(4) : location;
+    if (!id || id === "." || id === ".." || invalidSessionId.test(id)) throw new Error(`不是 DSH 会话 ID 或定位符：${location}`);
+    return SessionId(id);
+}
+
+export async function listDshWorkspaceSessions(ctx: Context, signal: AbortSignal): Promise<WorkspaceSession[]> {
+    signal.throwIfAborted();
+    const records = await ctx.sessionQuery.listSessions(signal);
+    const titles = await ctx.sessionQuery.readTitleSnapshots(records.map(({ header }) => header.id), signal);
+    signal.throwIfAborted();
+    const byId = new Map(titles.flatMap((result) => result.status === "fulfilled"
+        ? [[result.sessionId, result.value.title?.title] as const] : []));
+    return records.map(({ header }) => ({
+        id: header.id, title: byId.get(header.id) || header.id,
+        cwd: header.cwd ?? "", createdAt: header.createdAt,
+    }));
+}
+
+// Observe rather than resume/fork: a persisted historical source never needs an Agent.
+export async function captureDshSession(ctx: Context, location: string, signal: AbortSignal, watermark?: number): Promise<CapturedDshSession> {
+    signal.throwIfAborted();
+    const observation = await ctx.sessionQuery.observeSession(nativeSessionId(location), { signal, projectionMode: "all" });
+    try {
+        signal.throwIfAborted();
+        const header = structuredClone(observation.header);
+        const through = watermark ?? observation.cursor;
+        if (!Number.isSafeInteger(through) || through < -1 || through > observation.cursor) throw new Error("会话快照截止位置已失效，请刷新会话后重试");
+        const events = through === observation.cursor ? observation.events : observation.events.slice(0, through + 1);
+        const snapshot = snapshotOf(header, events, ctx, signal);
+        const entries: WorkspaceEntry[] = [];
+        for (const event of events) {
+            signal.throwIfAborted();
+            if (!isAppendSurfaceEvent(event)) continue;
+            const message = deriveEventMessage(event);
+            if (!message) continue;
+            const toolCalls: NonNullable<WorkspaceEntry["toolCalls"]> = [];
+            const content: string[] = [];
+            for (const block of message.content) {
+                if (block.type === "tool-call") toolCalls.push({ id: block.id, name: block.name, arguments: block.arguments });
+                else if (block.type === "tool-addition") content.push(`[添加工具：${block.toolName}]`);
+                else if (block.type === "tool-removal") content.push(`[移除工具：${block.toolName}]`);
+                else content.push(blockText([block], "workspace", [], ctx));
+            }
+            entries.push({
+                id: eventId(event), role: message.role, content: content.join(""),
+                at: new Date(event.time).toISOString(),
+                ...(toolCalls.length ? { toolCalls } : {}),
+            });
+        }
+        const title = observation.projections?.values.title;
+        const modelSelection = observation.projections?.values.modelSelection;
+        return {
+            header, snapshot,
+            ...(modelSelection ? { modelSelection: structuredClone(modelSelection) } : {}),
+            workspace: {
+                session: { id: header.id, title: typeof title === "string" && title ? title : header.id, cwd: header.cwd ?? "", createdAt: header.createdAt },
+                watermark: through, entries,
+            },
+        };
+    } finally {
+        observation[Symbol.dispose]();
+    }
+}
+
+export function createDshHistorySources(ctx: Context, selected: CapturedDshSession, signal: AbortSignal): SessionSource {
+    const currentId = locator(selected.header.id);
+    const loaded = (captured: CapturedDshSession): LoadedSession => ({
+        key: captured.snapshot.sessionKey, id: locator(captured.header.id), file: locator(captured.header.id),
+        label: captured.workspace.session.title, snapshot: captured.snapshot,
+        external: captured.header.id !== selected.header.id,
+    });
+    const cache = new Map<string, Promise<LoadedSession>>([[currentId, Promise.resolve(loaded(selected))]]);
+    return {
+        async readCurrent() { signal.throwIfAborted(); return selected.snapshot; },
+        current() { return loaded(selected); },
+        async list() {
+            return (await listDshWorkspaceSessions(ctx, signal)).map((session) => ({
+                id: locator(session.id), path: locator(session.id), cwd: session.cwd,
+                label: session.title, created: new Date(session.createdAt),
+            }));
+        },
+        async load(location) {
+            signal.throwIfAborted();
+            const key = locator(nativeSessionId(location));
+            let pending = cache.get(key);
+            if (!pending) {
+                pending = captureDshSession(ctx, key, signal).then(loaded);
+                cache.set(key, pending);
+                void pending.catch(() => { if (cache.get(key) === pending) cache.delete(key); });
+            }
+            return pending;
+        },
+    };
+}
 
 // The receiving agent, not another live agent or a newly resumed session, owns this cut.
 export function createDshSources(ctx: Context, agent: Agent, signal: AbortSignal): SessionSource {
@@ -40,9 +144,7 @@ export function createDshSources(ctx: Context, agent: Agent, signal: AbortSignal
         },
         async load(location) {
             signal.throwIfAborted();
-            const id = location.startsWith("dsh:") ? location.slice(4) : location;
-            if (!id || id === "." || id === ".." || invalidSessionId.test(id)) throw new Error(`不是 DSH 会话 ID 或定位符：${location}`);
-            const observation = await ctx.sessionQuery.observeSession(SessionId(id), { signal, projectionMode: "none" });
+            const observation = await ctx.sessionQuery.observeSession(nativeSessionId(location), { signal, projectionMode: "none" });
             try {
                 return loaded(observation.header, snapshotOf(observation.header, observation.events, ctx, signal));
             } finally {

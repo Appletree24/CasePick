@@ -3,20 +3,20 @@ import type { Context } from "@deepseek-ai/cordis";
 import type { ClientConnectionRpc, ConnectionHandle } from "@deepseek-ai/dsh-client-connection/client";
 import type {} from "@deepseek-ai/dsh-client-ui-commands/client";
 import type {} from "@deepseek-ai/dsh-client-ui-conversation/client";
-import type {} from "@deepseek-ai/dsh-client-ui-layout/client";
+import type { MainPanelId } from "@deepseek-ai/dsh-client-ui-layout/client";
 import type {} from "@deepseek-ai/dsh-client-ui-renderer/client";
-import type { UseSessions } from "@deepseek-ai/dsh-client-ui-session/client";
 import type { SidebarPanelIconOwnerProps } from "@deepseek-ai/dsh-client-ui-sidebar/client";
 import type {} from "@deepseek-ai/dsh-client-ui-slots";
 import {
     Button, focusWithoutRing, IconChecklistOutlineRegular, IconCheckCircleFillRegular,
     IconChevronDownOutlineRegular, IconChevronRightOutlineRegular, IconCloseCircleFillRegular,
-    IconInfoOutlineRegular, IconWarningOutlineRegular, Input, Modal, ShortcutKeys, StateDot, Switch, Tag, TextShimmer,
+    IconInfoOutlineRegular, IconWarningOutlineRegular, Input, ShortcutKeys, StateDot, Switch, Tag, TextShimmer,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import { reasoningLevels } from "../core/reasoning.js";
-import { rpcPath, type Dialog, type NativeSettings, type ViewState } from "./protocol.js";
+import { rpcPath, type Dialog, type NativeSettings, type ViewState, type WorkspaceSession } from "./protocol.js";
 import { settingError, settingKeys, settingRanges, type SettingKey } from "./settings-patch.js";
 import { injectStyles } from "./styles.js";
+import { Workspace, WorkspaceNavigation, type WorkspaceSurface } from "./workspace.js";
 
 export const name = "casepick";
 export const inject = ["commandUi", "connection", "slots", "layout"];
@@ -54,7 +54,7 @@ class SessionSurface {
     private startSerial = 0;
     private pendingStart = false;
 
-    constructor(private readonly rpc: Rpc, readonly sessionId: string) {}
+    constructor(private readonly rpc: Rpc, readonly sessionId: string, private readonly discover: (sessionId: string) => void) {}
 
     readonly getSnapshot = (): SurfaceState => this.state;
     readonly subscribe = (listener: () => void): (() => void) => {
@@ -74,6 +74,7 @@ class SessionSurface {
         if (previous && view.revision < previous.revision) return;
         const discover = view.runId !== undefined && view.runId !== this.dismissedRun;
         this.update({ view, open: this.state.open || discover, error: undefined });
+        if (discover && !view.done && previous?.runId !== view.runId) this.discover(this.sessionId);
     }
 
     attach(): () => void {
@@ -83,7 +84,6 @@ class SessionSurface {
             if (--this.mounts !== 0) return;
             this.poll?.abort();
             this.poll = undefined;
-            this.close();
         };
     }
 
@@ -120,7 +120,7 @@ class SessionSurface {
         }
     }
 
-    readonly open = async (args = ""): Promise<void> => {
+    readonly open = async (args = "", cutoffEntry?: string, watermark?: number): Promise<void> => {
         if (this.disposed || this.pendingStart) return;
         const current = this.state.view;
         if (current?.runId && !current.done && current.runId !== this.dismissedRun) {
@@ -131,9 +131,8 @@ class SessionSurface {
         this.pendingStart = true;
         this.update({ open: true, busy: true, error: undefined });
         try {
-            // Do not abort a start response: if the modal closes in flight, its
-            // returned run still needs an explicit, identity-fenced cancellation.
-            const view = await call<ViewState>(this.rpc, "start", { sessionId: this.sessionId, args });
+            // A returned run always needs an explicit identity-fenced cancellation.
+            const view = await call<ViewState>(this.rpc, "start", { sessionId: this.sessionId, args, cutoffEntry, watermark });
             if (serial !== this.startSerial || this.disposed) {
                 if (view.runId && !view.done) {
                     this.dismissedRun = view.runId;
@@ -227,7 +226,7 @@ function DialogForm({ dialog, busy, text, setText, answer }: {
             options[next]?.focus();
         }}>
             {(dialog.options ?? []).map((option, index) => <button
-                key={index} type="button" disabled={busy} data-modal-autofocus={index === 0 ? "" : undefined}
+                key={index} type="button" disabled={busy} data-casepick-autofocus={index === 0 ? "" : undefined}
                 className="casepick-option"
                 onClick={() => answer(option)}
             >
@@ -238,7 +237,7 @@ function DialogForm({ dialog, busy, text, setText, answer }: {
         {dialog.kind === "editor" && <>
             <textarea
                 aria-label={dialog.title.split("\n")[0]} aria-describedby={hintId}
-                data-modal-autofocus="" rows={10} value={text} disabled={busy} className="casepick-editor"
+                data-casepick-autofocus="" rows={10} value={text} disabled={busy} className="casepick-editor"
                 onChange={(event) => setText(event.target.value)}
                 onKeyDown={(event) => {
                     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
@@ -256,11 +255,11 @@ function DialogForm({ dialog, busy, text, setText, answer }: {
     </div>;
 }
 
-function SessionOverlay({ surface }: { surface: SessionSurface }): React.ReactElement {
+function WorkflowPanel({ surface, onComplete }: { surface: SessionSurface; onComplete: () => void }): React.ReactElement {
     const state = React.useSyncExternalStore(surface.subscribe, surface.getSnapshot, surface.getSnapshot);
     React.useEffect(() => surface.attach(), [surface]);
     const [editor, setEditor] = React.useState({ key: "", text: "" });
-    const body = React.useRef<HTMLDivElement>(null);
+    const body = React.useRef<HTMLElement>(null);
     const view = state.view;
     const dialog = view?.dialog;
     const key = `${view?.runId ?? ""}:${dialog?.id ?? ""}`;
@@ -273,46 +272,62 @@ function SessionOverlay({ surface }: { surface: SessionSurface }): React.ReactEl
     const answer = (value: string | boolean | null) => {
         if (dialog && view?.runId) void surface.answer(view.runId, dialog.id, value);
     };
+    React.useEffect(() => {
+        if (view?.runId && view.done) onComplete();
+    }, [view?.runId, view?.done, onComplete]);
     React.useLayoutEffect(() => {
         if (!state.open || state.busy) return;
-        const target = body.current?.closest('[role="dialog"]')
-            ?.querySelector<HTMLElement>("[data-modal-autofocus]:not(:disabled)");
+        const target = body.current?.querySelector<HTMLElement>("[data-casepick-autofocus]:not(:disabled)");
         if (target) focusWithoutRing(target);
+        const workspace = body.current?.closest(".casepick-workspace");
+        if (workspace && workspace.clientWidth <= 900) body.current?.scrollIntoView({ block: "nearest" });
     }, [key, state.busy, state.open]);
-    return <Modal open={state.open} title="CasePick" closeLabel="关闭 CasePick" onClose={surface.close}
-        className="casepick-modal" contentClassName="casepick-modal-content"
-        footer={<div className="casepick-modal-actions">
-            {dialog && view?.runId ? <>
-                <Button variant="ghost" className={`casepick-action${dialog.kind === "confirm" ? " casepick-cancel" : ""}`}
-                    disabled={state.busy} onClick={() => answer(null)}>取消</Button>
-                {dialog.kind === "confirm" && <>
-                    <Button variant="outline" className="casepick-action" disabled={state.busy} onClick={() => answer(false)}>否</Button>
-                    <Button variant="primary" className="casepick-action" data-modal-autofocus=""
-                        disabled={state.busy} onClick={() => answer(true)}>是</Button>
-                </>}
-                {dialog.kind === "editor" && <Button variant="primary" className="casepick-action"
-                    disabled={state.busy} onClick={() => answer(text)}>{state.busy ? "正在提交…" : "提交"}</Button>}
-            </> : <Button variant={finished || state.error ? "primary" : "outline"} className="casepick-action"
-                data-modal-autofocus="" onClick={surface.close}>{finished || state.error ? "关闭" : "取消"}</Button>}
-        </div>}>
-        <div ref={body} className="casepick-stack">
-            {dialog && <h3 className="casepick-dialog-title">{title}</h3>}
-            {detailText && <div key={key} className="casepick-detail" tabIndex={0} role="region" aria-label="详细内容">{detailText}</div>}
+    return <aside ref={body} className="casepick-workflow" aria-label="审阅与保存">
+        <header className="casepick-section-heading">
+            <div><span className="casepick-eyebrow">工作流</span><h2>审阅与保存</h2></div>
+            {state.open && <Button variant="ghost" disabled={state.busy} onClick={surface.close}>
+                {finished ? "清除" : "结束运行"}
+            </Button>}
+        </header>
+        <div className="casepick-stack casepick-workflow-body" aria-busy={state.busy}>
+            {state.open && dialog && <h3 className="casepick-dialog-title">{title}</h3>}
+            {state.open && detailText && <div className="casepick-detail" tabIndex={0} role="region" aria-label="详细内容">{detailText}</div>}
             {state.error && <Notice level="error">{state.error}</Notice>}
-            {(status || (!dialog && !state.error)) && <div role="status" aria-live="polite" className="casepick-status">
+            {state.open && dialog && status && <details className="casepick-status-context">
+                <summary>上下文与运行状态</summary><pre className="casepick-detail">{status}</pre>
+            </details>}
+            {state.open && !dialog && !state.error && <div role="status" aria-live="polite" className="casepick-status">
                 <StateDot state={finished ? failed ? "error" : "done" : "ongoing"} />
                 <TextShimmer active={!finished} className="casepick-status-text">
                     {finished ? "CasePick 已结束。" : status || "CasePick 正在处理…"}
                 </TextShimmer>
             </div>}
-            {view && view.notices.length > 0 && <div aria-live="polite" className="casepick-notices"
-                tabIndex={0} role="region" aria-label="运行提示">
-                {view.notices.map((notice, index) => <Notice key={index} level={notice.level}>{notice.text}</Notice>)}
-            </div>}
-            {dialog && view?.runId && <DialogForm key={`${view.runId}:${dialog.id}`} dialog={dialog} busy={state.busy}
+            {state.open && dialog && view?.runId && <DialogForm key={`${view.runId}:${dialog.id}`} dialog={dialog} busy={state.busy}
                 text={text} setText={(text) => setEditor({ key, text })} answer={answer} />}
+            {state.open && view && view.notices.length > 0 && <div aria-live="polite" className="casepick-notices"
+                tabIndex={0} role="region" aria-label="运行提示">
+                <Notice level={view.notices[view.notices.length - 1].level}>{view.notices[view.notices.length - 1].text}</Notice>
+                {view.notices.length > 1 && <details><summary>之前的运行记录（{view.notices.length - 1} 条）</summary>
+                    {view.notices.slice(0, -1).map((notice, index) => <Notice key={index} level={notice.level}>{notice.text}</Notice>)}
+                </details>}
+            </div>}
         </div>
-    </Modal>;
+        {state.open && dialog && view?.runId && <footer className="casepick-workflow-actions">
+            <Button variant="ghost" className="casepick-action" disabled={state.busy} onClick={() => answer(null)}>取消此步</Button>
+            {dialog.kind === "confirm" && <>
+                <Button variant="outline" className="casepick-action" disabled={state.busy} onClick={() => answer(false)}>否</Button>
+                <Button variant="primary" className="casepick-action" data-casepick-autofocus=""
+                    disabled={state.busy} onClick={() => answer(true)}>是</Button>
+            </>}
+            {dialog.kind === "editor" && <Button variant="primary" className="casepick-action"
+                disabled={state.busy} onClick={() => answer(text)}>{state.busy ? "正在提交…" : "提交"}</Button>}
+        </footer>}
+        {!state.open && <div className="casepick-empty">
+            <IconChecklistOutlineRegular size={24} />
+            <h3>从会话到评测案例</h3>
+            <p>选择会话与原出错回复，开始审阅。证据、切片、模型起草、预览与保存都在此处完成。</p>
+        </div>}
+    </aside>;
 }
 
 /** Staged page text; numbers stay text so invalid input can be shown, not rewritten. */
@@ -360,14 +375,11 @@ function Field({ id, label, hint, error, modified, children }: {
 
 interface SettingsPageProps {
     rpc: Rpc;
-    useSessions: UseSessions;
+    session?: WorkspaceSession;
     openConfig: (sessionId: string) => void;
 }
 
-function SettingsPage({ rpc, useSessions, openConfig }: SettingsPageProps): React.ReactElement {
-    // A global panel keeps the shell's selected conversation and its mainView reference.
-    const session = useSessions((sessions) =>
-        Object.values(sessions.byId).find((session) => (session.retainedBy.mainView ?? 0) > 0));
+function SettingsPage({ rpc, session, openConfig }: SettingsPageProps): React.ReactElement {
     const sessionId = session?.id;
     const [saved, setSaved] = React.useState<NativeSettings>();
     const [draft, setDraft] = React.useState<Draft>();
@@ -439,8 +451,8 @@ function SettingsPage({ rpc, useSessions, openConfig }: SettingsPageProps): Reac
             <header className="casepick-page-heading">
                 <span className="casepick-page-mark" aria-hidden="true"><IconChecklistOutlineRegular size={24} /></span>
                 <div>
-                    <h1>CasePick</h1>
-                    <p className="casepick-page-intro">把会话中的犯错整理成评测案例。</p>
+                    <h1>设置</h1>
+                    <p className="casepick-page-intro">管理 CasePick 运行参数与默认配置。</p>
                 </div>
             </header>
             <form aria-label="CasePick 设置" className="casepick-settings-form" onSubmit={(event) => { event.preventDefault(); void save(); }}>
@@ -463,7 +475,7 @@ function SettingsPage({ rpc, useSessions, openConfig }: SettingsPageProps): Reac
                         </div>
                     </div>
                     <Field {...field("draftModel")} modified={"draftModel" in patch} label="起草模型"
-                        hint="current：当前会话的模型；off：不使用模型；或填写 provider/model。">
+                        hint="current：工作区所选会话的模型；off：不使用模型；或填写 provider/model。">
                         <Input {...inputProps("draftModel")} className="casepick-input" placeholder="沿用 /casepick config" autoComplete="off" spellCheck={false} />
                     </Field>
                     <Field {...field("reasoning")} modified={"reasoning" in patch} label="思考等级" hint="模型不支持所选等级时自动降级。">
@@ -487,15 +499,15 @@ function SettingsPage({ rpc, useSessions, openConfig }: SettingsPageProps): Reac
                 <section aria-labelledby="casepick-wizard-heading" className="casepick-card casepick-wizard">
                     <header className="casepick-card-heading">
                         <h2 id="casepick-wizard-heading">配置向导</h2>
-                        <p className="casepick-hint">在会话中选择起草模型、思考等级及外发同意等默认配置，保存至 CasePick 本地配置文件。</p>
+                        <p className="casepick-hint">选择起草模型、思考等级及外发同意等默认配置，保存至 CasePick 本地配置文件。向导在工作区内完成。</p>
                     </header>
                     <Button variant="outline" className="casepick-wizard-button" disabled={!sessionId || dirty}
                         onClick={() => { if (sessionId) openConfig(sessionId); }}>
-                        在当前会话中打开 /casepick config <IconChevronRightOutlineRegular size={14} />
+                        打开 /casepick config 配置向导 <IconChevronRightOutlineRegular size={14} />
                     </Button>
                     <small className="casepick-hint">{!sessionId
-                        ? "先在左侧栏选中一个会话。"
-                        : dirty ? "有未保存的修改，请先保存或还原。" : `将回到会话「${session?.title || sessionId}」并打开向导。`}</small>
+                        ? "先在 CasePick 的会话列表中选择一个会话。"
+                        : dirty ? "有未保存的修改，请先保存或还原。" : `将使用工作区会话「${session?.title || sessionId}」打开向导。`}</small>
                 </section>
                 {error && <Notice level="error">{error}</Notice>}
                 <footer className="casepick-savebar">
@@ -524,6 +536,12 @@ function SettingsPage({ rpc, useSessions, openConfig }: SettingsPageProps): Reac
     </section>;
 }
 
+/** Native command runs are observed here, but every interaction lives in the main workspace. */
+function SessionObserver({ surface }: { surface: SessionSurface }): null {
+    React.useEffect(() => surface.attach(), [surface]);
+    return null;
+}
+
 function CasePickIcon({ size }: SidebarPanelIconOwnerProps): React.ReactElement {
     return <IconChecklistOutlineRegular size={size} />;
 }
@@ -531,10 +549,15 @@ function CasePickIcon({ size }: SidebarPanelIconOwnerProps): React.ReactElement 
 export function apply(ctx: ClientContext): void {
     ctx.effect(() => injectStyles(), "casepick: styles");
     const surfaces = new Map<string, SessionSurface>();
+    const navigation = new WorkspaceNavigation();
+    const focusSession = (sessionId: string) => {
+        navigation.select("sessions", sessionId);
+        ctx.layout.selectPanel(PANEL_ID as MainPanelId);
+    };
     const surfaceFor = (sessionId: string): SessionSurface => {
         let surface = surfaces.get(sessionId);
         if (!surface) {
-            surface = new SessionSurface(ctx.connection.rpc, sessionId);
+            surface = new SessionSurface(ctx.connection.rpc, sessionId, focusSession);
             surfaces.set(sessionId, surface);
         }
         return surface;
@@ -546,24 +569,28 @@ export function apply(ctx: ClientContext): void {
     ctx.effect(() => ctx.commandUi.decorate({
         name: "casepick",
         available: () => true,
-        ui: { kind: "action", run: ({ sessionId }) => { void surfaceFor(sessionId).open(); } },
+        ui: { kind: "action", run: ({ sessionId }) => {
+            focusSession(sessionId);
+            void surfaceFor(sessionId).open();
+        } },
     }), "casepick: bare host command decoration");
     ctx.slots.inject("conversation.input.overlay", () => ctx.slots.register({
         name: "conversation.input.overlay",
-        id: "casepick-dialog",
+        id: "casepick-command-observer",
         order: 10,
         inject: (sessionId) => ({ surface: surfaceFor(sessionId) }),
-    }, SessionOverlay));
-    // The wizard's modal lives in the conversation, so reveal it before starting.
-    const openConfig = (sessionId: string) => {
-        ctx.layout.selectPanel(null);
-        void surfaceFor(sessionId).open("config");
-    };
+    }, SessionObserver));
     ctx.slots.inject("main", () => ctx.slots.register({
         name: "main",
         key: PANEL_ID,
-        inject: () => ({ rpc: ctx.connection.rpc, openConfig }),
-    }, SettingsPage));
+        inject: () => ({
+            rpc: ctx.connection.rpc, navigation, surfaceFor,
+            renderSettings: (session: WorkspaceSession | undefined, openConfig: (sessionId: string) => void) =>
+                <SettingsPage rpc={ctx.connection.rpc} session={session} openConfig={openConfig} />,
+            renderWorkflow: (surface: WorkspaceSurface, onComplete: () => void) =>
+                <WorkflowPanel key={surface.sessionId} surface={surfaceFor(surface.sessionId)} onComplete={onComplete} />,
+        }),
+    }, Workspace));
     ctx.slots.inject("sidebar.panellist", () => ctx.slots.register({
         name: "sidebar.panellist",
         id: PANEL_ID,

@@ -7,7 +7,7 @@ import { buildSlice, type SliceDraft } from "./slice.ts";
 import { currentSession } from "./sources.ts";
 import { pick, reviewCase } from "./ui.ts";
 
-export async function generateCases(pi: WorkflowAPI, ctx: WorkflowContext, version: string): Promise<void> {
+export async function generateCases(pi: WorkflowAPI, ctx: WorkflowContext, version: string, cutoffEntry?: string): Promise<void> {
     if (!ctx.isIdle()) {
         ctx.ui.notify("请等当前回复结束后再运行 /casepick，以便读取完整消息。", "warning");
         return;
@@ -17,12 +17,19 @@ export async function generateCases(pi: WorkflowAPI, ctx: WorkflowContext, versi
     try {
         const snapshot = await readSession(ctx, pi);
         const candidates = findCandidates(snapshot.messages);
+        if (cutoffEntry !== undefined && !candidates.some((candidate) => candidate.entryId === cutoffEntry)) throw new Error("请选择当前快照中的一条原始 assistant 回复");
         if (!candidates.length) {
             const choice = await ctx.ui.select("当前分支还没有可整理的 assistant 回复。", ["整理长程问题（跨多轮、多个会话）", "结束"]);
             if (choice?.startsWith("整理长程问题")) await manageIssues(pi, ctx, version, snapshot);
             return;
         }
         const session = currentSession(ctx, snapshot);
+        if (cutoffEntry !== undefined) {
+            const draft = buildSlice(ctx, session, cutoffEntry, version);
+            const saved = await reviewCase(ctx.ui, draft.doc, draft.context, path, (doc) => appendCase(doc, path), draft.options);
+            ctx.ui.notify(saved ? `本次已生成并保存 1 条案例：\n${path}` : "本次未保存案例。", "info");
+            return;
+        }
         const drafts = new Map<string, SliceDraft>();
         const saved = new Set<string>();
         while (true) {
