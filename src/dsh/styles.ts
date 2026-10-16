@@ -294,7 +294,7 @@ export const casepickStyles = `
 }
 .casepick-shortcuts > span { display: inline-flex; align-items: center; gap: 4px; }
 .casepick-notices { display: flex; flex-direction: column; gap: 8px; max-height: 240px; overflow: auto; }
-.casepick-modal-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; width: 100%; }
+.casepick-modal-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; width: 100%; }
 .casepick-modal-actions .casepick-cancel { margin-right: auto; }
 .casepick-option:focus-visible, .casepick-editor:focus-visible, .casepick-select:focus-visible,
 .casepick-detail:focus-visible, .casepick-notices:focus-visible,
