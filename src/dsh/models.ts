@@ -7,6 +7,12 @@ import type {} from "@deepseek-ai/dsh-api-session-controller/types";
 import type { Api, AssistantMessage, Context, Model } from "@earendil-works/pi-ai";
 import type { WorkflowModelRegistry } from "../host.ts";
 
+declare module "@deepseek-ai/dsh-llm" {
+    interface MessageSourceMap {
+        casepick: { kind: "casepick" };
+    }
+}
+
 // These are the shared UI's exact vocabulary, not aliases for native opaque effort IDs.
 const levels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
@@ -91,7 +97,7 @@ export async function createDshModels(ctx: DshContext, agent: Agent, signal: Abo
         if (context.tools?.length) throw new Error("DSH 案例起草不支持工具");
         const messages = context.messages.map((message) => {
             if (message.role !== "user" || typeof message.content !== "string") throw new Error("DSH 案例起草只接受独立的纯文本 user 请求");
-            return createUserMessage({ content: [{ type: "text", text: message.content }], source: { kind: "plugin", plugin: "casepick" } });
+            return createUserMessage({ content: [{ type: "text", text: message.content }], source: { kind: "casepick" } });
         });
         const signals = [signal];
         if (opts.signal instanceof AbortSignal) signals.push(opts.signal);

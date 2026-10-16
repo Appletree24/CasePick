@@ -74,6 +74,7 @@ async function run<T>(ctx: WorkflowContext, purpose: string, prompts: Prompt[],
     let input = 0;
     let output = 0;
     let unknownUsage = false;
+    let complete = true;
     try {
         for (const [index, request] of requests.entries()) {
             ctx.ui.setStatus("casepick", `CasePick：${purpose}，${prepared.draft.label}，第 ${index + 1} / ${requests.length} 个请求…`);
@@ -81,12 +82,21 @@ async function run<T>(ctx: WorkflowContext, purpose: string, prompts: Prompt[],
             try {
                 reply = await callModel(ctx, prepared.draft, request.prompt);
             } catch (error) {
+                complete = false;
                 ctx.ui.notify(`第 ${index + 1} 个请求失败，剩余 ${requests.length - index - 1} 个不再发送：${error instanceof Error ? error.message : String(error)}`, "error");
                 if (prepared.debug) await showDebug(ctx, purpose, index, requests.length, prepared.draft, request,
                     { status: "模型调用失败", error: error instanceof Error ? error.message : String(error) });
                 break;
             }
             if (reply.usage) { input += reply.usage.input; output += reply.usage.output; } else unknownUsage = true;
+            if (reply.stopReason === "length") {
+                complete = false;
+                const error = "模型达到输出上限；即使返回合法 JSON，也不能将不完整回复作为已完成扫描。";
+                ctx.ui.notify(error, "warning");
+                if (prepared.debug) await showDebug(ctx, purpose, index, requests.length, prepared.draft, request,
+                    { status: "回复被截断，未执行核对", reply, error });
+                break;
+            }
             let parsed: unknown;
             try { parsed = parseJsonObject(reply.text); } catch (error) {
                 rejected.push({ item: reply.text.slice(0, 200), reason: `第 ${index + 1} 个回复无法解析：${error instanceof Error ? error.message : String(error)}` });
@@ -105,7 +115,8 @@ async function run<T>(ctx: WorkflowContext, purpose: string, prompts: Prompt[],
     } finally {
         ctx.ui.setStatus("casepick", undefined);
     }
-    ctx.ui.notify(`${purpose}完成：${accepted.length} 条通过核对，${rejected.length} 条被丢弃。用量 输入 ${input} / 输出 ${output} tokens${unknownUsage ? "（部分请求未返回用量）" : ""}。`, "info");
+    ctx.ui.notify(`${purpose}${complete ? "完成" : "未完成"}：${accepted.length} 条通过核对，${rejected.length} 条被丢弃。用量 输入 ${input} / 输出 ${output} tokens${unknownUsage ? "（部分请求未返回用量）" : ""}。`, complete ? "info" : "warning");
+    if (!complete) return undefined;
     if (rejected.length && await ctx.ui.confirm("查看被丢弃的建议？", `${rejected.length} 条建议没有通过核对，没有使用。`)) {
         await showText(ctx.ui, "被丢弃的建议", rejected.map((item) => `原因：${item.reason}\n内容：${JSON.stringify(item.item).slice(0, 300)}`).join("\n\n"));
     }

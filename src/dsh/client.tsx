@@ -3,15 +3,25 @@ import type { Context } from "@deepseek-ai/cordis";
 import type { ClientConnectionRpc, ConnectionHandle } from "@deepseek-ai/dsh-client-connection/client";
 import type {} from "@deepseek-ai/dsh-client-ui-commands/client";
 import type {} from "@deepseek-ai/dsh-client-ui-conversation/client";
+import type {} from "@deepseek-ai/dsh-client-ui-layout/client";
 import type {} from "@deepseek-ai/dsh-client-ui-renderer/client";
-import type {} from "@deepseek-ai/dsh-client-ui-settings-plugins/client";
 import type { UseSessions } from "@deepseek-ai/dsh-client-ui-session/client";
+import type { SidebarPanelIconOwnerProps } from "@deepseek-ai/dsh-client-ui-sidebar/client";
 import type {} from "@deepseek-ai/dsh-client-ui-slots";
-import { Modal } from "@deepseek-ai/dsh-client-ui-primitives";
+import {
+    Button, focusWithoutRing, IconChecklistOutlineRegular, IconCheckCircleFillRegular,
+    IconChevronDownOutlineRegular, IconChevronRightOutlineRegular, IconCloseCircleFillRegular,
+    IconInfoOutlineRegular, IconWarningOutlineRegular, Input, Modal, ShortcutKeys, StateDot, Switch, Tag, TextShimmer,
+} from "@deepseek-ai/dsh-client-ui-primitives";
+import { reasoningLevels } from "../core/reasoning.js";
 import { rpcPath, type Dialog, type NativeSettings, type ViewState } from "./protocol.js";
+import { settingError, settingKeys, settingRanges, type SettingKey } from "./settings-patch.js";
+import { injectStyles } from "./styles.js";
 
 export const name = "casepick";
-export const inject = ["commandUi", "connection", "slots"];
+export const inject = ["commandUi", "connection", "slots", "layout"];
+// Sidebar row id and main-panel key of the standalone CasePick page.
+const PANEL_ID = "casepick";
 
 type Rpc = ClientConnectionRpc;
 type ClientContext = Context & { connection: ConnectionHandle };
@@ -128,7 +138,7 @@ class SessionSurface {
                 if (view.runId && !view.done) {
                     this.dismissedRun = view.runId;
                     await this.cancelRun(view.runId).catch((error: unknown) => {
-                        this.update({ open: true, error: `Could not cancel CasePick: ${errorMessage(error)}` });
+                        this.update({ open: true, error: `无法取消 CasePick：${errorMessage(error)}` });
                     });
                 }
                 return;
@@ -170,7 +180,7 @@ class SessionSurface {
         this.update({ open: false, busy: false, error: undefined });
         if (view?.runId && !view.done) {
             void this.cancelRun(view.runId).catch((error: unknown) => {
-                this.update({ open: true, error: `Could not cancel CasePick: ${errorMessage(error)}` });
+                this.update({ open: true, error: `无法取消 CasePick：${errorMessage(error)}` });
             });
         }
     };
@@ -183,36 +193,52 @@ class SessionSurface {
     }
 }
 
-const buttonStyle: React.CSSProperties = {
-    font: "inherit", color: "inherit", background: "transparent", border: "1px solid currentColor",
-    borderRadius: 6, padding: "7px 12px", cursor: "pointer",
-};
-const stackStyle: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 12, minWidth: 0 };
-const rowStyle: React.CSSProperties = { display: "flex", flexWrap: "wrap", gap: 8 };
+function Notice({ level, children }: {
+    level: "info" | "warning" | "error";
+    children: React.ReactNode;
+}): React.ReactElement {
+    const Icon = level === "error" ? IconCloseCircleFillRegular
+        : level === "warning" ? IconWarningOutlineRegular : IconInfoOutlineRegular;
+    return <div className="casepick-notice" data-level={level} role={level === "error" ? "alert" : "status"}>
+        <span className="casepick-notice-icon" aria-hidden="true"><Icon size={16} /></span>
+        <div className="casepick-notice-text">{children}</div>
+    </div>;
+}
 
-function DialogForm({ dialog, busy, answer }: {
+function DialogForm({ dialog, busy, text, setText, answer }: {
     dialog: Dialog;
     busy: boolean;
+    text: string;
+    setText: (text: string) => void;
     answer: (value: string | boolean | null) => void;
 }): React.ReactElement {
-    const [text, setText] = React.useState(dialog.prefill ?? "");
-    const form = React.useRef<HTMLDivElement>(null);
-    React.useLayoutEffect(() => {
-        if (!busy) form.current?.querySelector<HTMLElement>("[data-modal-autofocus]")?.focus();
-    }, [dialog.id, busy]);
-    return <div ref={form} style={stackStyle}>
-        {dialog.message !== undefined && <p style={{ margin: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{dialog.message}</p>}
-        {dialog.kind === "select" && <div style={{ ...stackStyle, gap: 6, maxHeight: "50vh", overflowY: "auto" }}>
+    const hintId = React.useId();
+    return <div className="casepick-stack">
+        {dialog.message !== undefined && <p className="casepick-message">{dialog.message}</p>}
+        {dialog.kind === "select" && <div className="casepick-options" onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+            if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+            const options = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"));
+            const index = options.indexOf(event.target as HTMLButtonElement);
+            if (index < 0) return;
+            event.preventDefault();
+            const next = event.key === "Home" ? 0 : event.key === "End" ? options.length - 1
+                : (index + (event.key === "ArrowDown" ? 1 : -1) + options.length) % options.length;
+            options[next]?.focus();
+        }}>
             {(dialog.options ?? []).map((option, index) => <button
                 key={index} type="button" disabled={busy} data-modal-autofocus={index === 0 ? "" : undefined}
-                style={{ ...buttonStyle, textAlign: "left", whiteSpace: "pre-wrap", overflowWrap: "anywhere", flexShrink: 0 }}
+                className="casepick-option"
                 onClick={() => answer(option)}
-            >{option}</button>)}
+            >
+                <span className="casepick-option-text">{option}</span>
+                <span className="casepick-option-icon" aria-hidden="true"><IconChevronRightOutlineRegular size={16} /></span>
+            </button>)}
         </div>}
         {dialog.kind === "editor" && <>
             <textarea
-                aria-label={dialog.title} data-modal-autofocus="" rows={10} value={text} disabled={busy}
-                style={{ boxSizing: "border-box", width: "100%", minWidth: 0, maxHeight: "50vh", resize: "vertical", font: "inherit", color: "inherit", background: "transparent", border: "1px solid currentColor", borderRadius: 6, padding: 10 }}
+                aria-label={dialog.title.split("\n")[0]} aria-describedby={hintId}
+                data-modal-autofocus="" rows={10} value={text} disabled={busy} className="casepick-editor"
                 onChange={(event) => setText(event.target.value)}
                 onKeyDown={(event) => {
                     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
@@ -221,94 +247,178 @@ function DialogForm({ dialog, busy, answer }: {
                     }
                 }}
             />
-            <small>Enter to submit · Shift+Enter for a new line</small>
+            <div id={hintId} className="casepick-shortcuts">
+                <span><ShortcutKeys keys={["Enter"]} /> 提交</span>
+                <span aria-hidden="true">·</span>
+                <span><ShortcutKeys keys={["Shift", "+", "Enter"]} /> 换行</span>
+            </div>
         </>}
-        <div style={rowStyle}>
-            {dialog.kind === "confirm" && <>
-                <button type="button" data-modal-autofocus="" style={buttonStyle} disabled={busy} onClick={() => answer(true)}>Yes</button>
-                <button type="button" style={buttonStyle} disabled={busy} onClick={() => answer(false)}>No</button>
-            </>}
-            {dialog.kind === "editor" && <button type="button" style={buttonStyle} disabled={busy} onClick={() => answer(text)}>Submit</button>}
-            <button type="button" style={buttonStyle} disabled={busy} onClick={() => answer(null)}>Cancel</button>
-        </div>
     </div>;
 }
 
 function SessionOverlay({ surface }: { surface: SessionSurface }): React.ReactElement {
     const state = React.useSyncExternalStore(surface.subscribe, surface.getSnapshot, surface.getSnapshot);
     React.useEffect(() => surface.attach(), [surface]);
+    const [editor, setEditor] = React.useState({ key: "", text: "" });
+    const body = React.useRef<HTMLDivElement>(null);
     const view = state.view;
     const dialog = view?.dialog;
-    return <Modal open={state.open} title="CasePick" closeLabel="Close CasePick" onClose={surface.close}>
-        <div style={{ ...stackStyle, maxHeight: "70vh", overflowY: "auto" }}>
-            {dialog && <div style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: "35vh", overflowY: "auto", flexShrink: 0 }}>{dialog.title}</div>}
-            {state.error && <div role="alert" style={{ color: "#d64545", whiteSpace: "pre-wrap" }}>{state.error}</div>}
-            {view && Object.keys(view.status).length > 0 && <div role="status" aria-live="polite" style={stackStyle}>
-                {Object.entries(view.status).map(([key, text]) => <div key={key} style={{ whiteSpace: "pre-wrap" }}>{text}</div>)}
+    const key = `${view?.runId ?? ""}:${dialog?.id ?? ""}`;
+    const text = editor.key === key ? editor.text : dialog?.prefill ?? "";
+    const [title, ...detail] = dialog?.title.split("\n") ?? [];
+    const detailText = detail.join("\n").replace(/^\n+/, "");
+    const status = Object.values(view?.status ?? {}).join("\n");
+    const finished = view?.done && !state.busy;
+    const failed = !!state.error || !!view?.notices.some((notice) => notice.level === "error");
+    const answer = (value: string | boolean | null) => {
+        if (dialog && view?.runId) void surface.answer(view.runId, dialog.id, value);
+    };
+    React.useLayoutEffect(() => {
+        if (!state.open || state.busy) return;
+        const target = body.current?.closest('[role="dialog"]')
+            ?.querySelector<HTMLElement>("[data-modal-autofocus]:not(:disabled)");
+        if (target) focusWithoutRing(target);
+    }, [key, state.busy, state.open]);
+    return <Modal open={state.open} title="CasePick" closeLabel="关闭 CasePick" onClose={surface.close}
+        className="casepick-modal" contentClassName="casepick-modal-content"
+        footer={<div className="casepick-modal-actions">
+            {dialog && view?.runId ? <>
+                <Button variant="ghost" className={`casepick-action${dialog.kind === "confirm" ? " casepick-cancel" : ""}`}
+                    disabled={state.busy} onClick={() => answer(null)}>取消</Button>
+                {dialog.kind === "confirm" && <>
+                    <Button variant="outline" className="casepick-action" disabled={state.busy} onClick={() => answer(false)}>否</Button>
+                    <Button variant="primary" className="casepick-action" data-modal-autofocus=""
+                        disabled={state.busy} onClick={() => answer(true)}>是</Button>
+                </>}
+                {dialog.kind === "editor" && <Button variant="primary" className="casepick-action"
+                    disabled={state.busy} onClick={() => answer(text)}>{state.busy ? "正在提交…" : "提交"}</Button>}
+            </> : <Button variant={finished || state.error ? "primary" : "outline"} className="casepick-action"
+                data-modal-autofocus="" onClick={surface.close}>{finished || state.error ? "关闭" : "取消"}</Button>}
+        </div>}>
+        <div ref={body} className="casepick-stack">
+            {dialog && <h3 className="casepick-dialog-title">{title}</h3>}
+            {detailText && <div key={key} className="casepick-detail" tabIndex={0} role="region" aria-label="详细内容">{detailText}</div>}
+            {state.error && <Notice level="error">{state.error}</Notice>}
+            {(status || (!dialog && !state.error)) && <div role="status" aria-live="polite" className="casepick-status">
+                <StateDot state={finished ? failed ? "error" : "done" : "ongoing"} />
+                <TextShimmer active={!finished} className="casepick-status-text">
+                    {finished ? "CasePick 已结束。" : status || "CasePick 正在处理…"}
+                </TextShimmer>
             </div>}
-            {view && view.notices.length > 0 && <div aria-live="polite" style={{ ...stackStyle, maxHeight: "25vh", overflowY: "auto", flexShrink: 0 }}>
-                {view.notices.map((notice, index) => <div key={index} role={notice.level === "error" ? "alert" : "status"}
-                    style={{ borderLeft: `3px solid ${notice.level === "error" ? "#d64545" : notice.level === "warning" ? "#c79217" : "#6486c5"}`, paddingLeft: 10, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}
-                ><strong>{notice.level === "warning" ? "Warning: " : notice.level === "error" ? "Error: " : ""}</strong>{notice.text}</div>)}
+            {view && view.notices.length > 0 && <div aria-live="polite" className="casepick-notices"
+                tabIndex={0} role="region" aria-label="运行提示">
+                {view.notices.map((notice, index) => <Notice key={index} level={notice.level}>{notice.text}</Notice>)}
             </div>}
             {dialog && view?.runId && <DialogForm key={`${view.runId}:${dialog.id}`} dialog={dialog} busy={state.busy}
-                answer={(value) => { void surface.answer(view.runId!, dialog.id, value); }} />}
-            {!dialog && !state.error && <div role="status">{view?.done ? "CasePick finished." : "CasePick is working…"}</div>}
-            {view?.done && !dialog && <button type="button" style={buttonStyle} onClick={surface.close}>Close</button>}
+                text={text} setText={(text) => setEditor({ key, text })} answer={answer} />}
         </div>
     </Modal>;
 }
 
-interface SettingsCardProps {
-    rpc: Rpc;
-    useSessions: UseSessions;
-    surfaceFor: (sessionId: string) => SessionSurface;
+/** Staged page text; numbers stay text so invalid input can be shown, not rewritten. */
+interface Draft {
+    debug: boolean;
+    draftModel: string;
+    reasoning: string;
+    maxOutputTokens: string;
+    timeoutSeconds: string;
 }
 
-function SettingsCard({ rpc, useSessions, surfaceFor }: SettingsCardProps): React.ReactElement {
-    const sessionId = useSessions((sessions) => sessions.current);
-    const [settings, setSettings] = React.useState<NativeSettings>();
+function toDraft(settings: NativeSettings): Draft {
+    return {
+        debug: settings.debug, draftModel: settings.draftModel, reasoning: settings.reasoning,
+        maxOutputTokens: settings.maxOutputTokens == null ? "" : String(settings.maxOutputTokens),
+        timeoutSeconds: settings.timeoutSeconds == null ? "" : String(settings.timeoutSeconds),
+    };
+}
+
+// A blank number clears the override, which falls back to /casepick config.
+function fromDraft(draft: Draft): Record<SettingKey, unknown> {
+    const number = (text: string) => text.trim() === "" ? null : Number(text.trim());
+    return { ...draft, maxOutputTokens: number(draft.maxOutputTokens), timeoutSeconds: number(draft.timeoutSeconds) };
+}
+
+function Field({ id, label, hint, error, modified, children }: {
+    id: string;
+    label: string;
+    hint: string;
+    error: string | undefined;
+    modified: boolean;
+    children: React.ReactNode;
+}): React.ReactElement {
+    return <div className={`casepick-field${error ? " casepick-field-invalid" : ""}`}>
+        <div className="casepick-field-copy">
+            <div className="casepick-field-heading">
+                <label htmlFor={id}>{label}</label>
+                {modified && <Tag tone="info">已修改</Tag>}
+            </div>
+            <small id={`${id}-hint`} role={error ? "alert" : undefined} className="casepick-hint">{error ?? hint}</small>
+        </div>
+        <div className="casepick-field-control">{children}</div>
+    </div>;
+}
+
+interface SettingsPageProps {
+    rpc: Rpc;
+    useSessions: UseSessions;
+    openConfig: (sessionId: string) => void;
+}
+
+function SettingsPage({ rpc, useSessions, openConfig }: SettingsPageProps): React.ReactElement {
+    // A global panel keeps the shell's selected conversation and its mainView reference.
+    const session = useSessions((sessions) =>
+        Object.values(sessions.byId).find((session) => (session.retainedBy.mainView ?? 0) > 0));
+    const sessionId = session?.id;
+    const [saved, setSaved] = React.useState<NativeSettings>();
+    const [draft, setDraft] = React.useState<Draft>();
     const [error, setError] = React.useState<string>();
+    const [notice, setNotice] = React.useState<string>();
     const [saving, setSaving] = React.useState(false);
+    const [loads, setLoads] = React.useState(0);
     const alive = React.useRef(false);
     React.useEffect(() => {
         alive.current = true;
         const controller = new AbortController();
-        const refresh = () => {
-            void call<NativeSettings>(rpc, "settings", {}, controller.signal).then((value) => {
-                if (!controller.signal.aborted) {
-                    setSettings(value);
-                    setError(undefined);
-                }
-            }).catch((reason: unknown) => {
-                if (!controller.signal.aborted) setError(errorMessage(reason));
-            });
-        };
-        refresh();
-        const surface = sessionId ? surfaceFor(sessionId) : undefined;
-        const initialView = surface?.getSnapshot().view;
-        let finishedRun = initialView?.done ? initialView.runId : undefined;
-        const unsubscribe = surface?.subscribe(() => {
-            const view = surface.getSnapshot().view;
-            if (view?.done && view.runId !== finishedRun) {
-                finishedRun = view.runId;
-                refresh();
-            }
+        void call<NativeSettings>(rpc, "settings", {}, controller.signal).then((value) => {
+            if (controller.signal.aborted) return;
+            setSaved(value);
+            setDraft(toDraft(value));
+            setError(undefined);
+        }).catch((reason: unknown) => {
+            if (!controller.signal.aborted) setError(errorMessage(reason));
         });
         return () => {
             alive.current = false;
             controller.abort();
-            unsubscribe?.();
         };
-    }, [rpc, sessionId, surfaceFor]);
+    }, [rpc, loads]);
 
-    const updateDebug = async (debug: boolean) => {
-        if (saving) return;
+    const values = draft && fromDraft(draft);
+    const stored = saved && fromDraft(toDraft(saved));
+    const errors = {} as Record<SettingKey, string | undefined>;
+    for (const key of settingKeys) errors[key] = values && settingError(key, values[key]);
+    const invalid = settingKeys.some((key) => errors[key] !== undefined);
+    const patch = values && stored
+        ? Object.fromEntries(settingKeys.filter((key) => !Object.is(values[key], stored[key])).map((key) => [key, values[key]]))
+        : {};
+    const dirty = Object.keys(patch).length > 0;
+    const disabled = !draft || saving;
+    const set = <K extends keyof Draft>(key: K, value: Draft[K]) => {
+        setDraft((current) => current && { ...current, [key]: value });
+        setNotice(undefined);
+    };
+
+    const save = async () => {
+        if (disabled || invalid || !dirty) return;
         setSaving(true);
         setError(undefined);
+        setNotice(undefined);
         try {
-            const value = await call<NativeSettings>(rpc, "settings/update", { debug });
-            if (alive.current) setSettings(value);
+            const value = await call<NativeSettings>(rpc, "settings/update", patch);
+            if (!alive.current) return;
+            setSaved(value);
+            setDraft(toDraft(value));
+            setNotice("已保存，之后的 CasePick 运行使用新设置。");
         } catch (reason) {
             if (alive.current) setError(errorMessage(reason));
         } finally {
@@ -316,29 +426,110 @@ function SettingsCard({ rpc, useSessions, surfaceFor }: SettingsCardProps): Reac
         }
     };
 
-    return <section aria-label="CasePick settings" style={{ ...stackStyle, padding: 16, border: "1px solid currentColor", borderRadius: 8 }}>
-        <h3 style={{ margin: 0 }}>CasePick</h3>
-        <label style={{ ...rowStyle, alignItems: "center" }}>
-            <input type="checkbox" checked={settings?.debug ?? false} disabled={!settings || saving}
-                onChange={(event) => { void updateDebug(event.target.checked); }} />
-            Debug mode (diagnostics kept in memory)
-        </label>
-        <small>Saved to the native DSH CasePick settings.</small>
-        {settings && <dl style={{ display: "grid", gridTemplateColumns: "max-content 1fr", gap: "4px 12px", margin: 0 }}>
-            <dt>Draft model</dt><dd style={{ margin: 0, overflowWrap: "anywhere" }}>{settings.draftModel || "Current session model"}</dd>
-            <dt>Reasoning</dt><dd style={{ margin: 0 }}>{settings.reasoning || "Default"}</dd>
-            <dt>Max output tokens</dt><dd style={{ margin: 0 }}>{settings.maxOutputTokens ?? "CasePick configuration"}</dd>
-            <dt>Timeout</dt><dd style={{ margin: 0 }}>{settings.timeoutSeconds === null ? "CasePick configuration" : `${settings.timeoutSeconds}s`}</dd>
-        </dl>}
-        {error && <div role="alert" style={{ color: "#d64545", whiteSpace: "pre-wrap" }}>{error}</div>}
-        <button type="button" style={buttonStyle} disabled={!sessionId} onClick={() => {
-            if (sessionId) void surfaceFor(sessionId).open("config");
-        }}>Open CasePick configuration</button>
-        {!sessionId && <small>Select a conversation to configure CasePick models and generation options.</small>}
+    const field = (key: SettingKey) => ({ id: `casepick-${key}`, error: errors[key] });
+    const inputProps = (key: "draftModel" | "maxOutputTokens" | "timeoutSeconds") => ({
+        id: `casepick-${key}`, value: draft?.[key] ?? "", disabled,
+        "aria-invalid": errors[key] !== undefined, "aria-describedby": `casepick-${key}-hint`,
+        onChange: (event: React.ChangeEvent<HTMLInputElement>) => set(key, event.target.value),
+    });
+    const range = (key: keyof typeof settingRanges) => `${settingRanges[key][0]}–${settingRanges[key][1]} 的整数；留空沿用 /casepick config`;
+
+    return <section aria-label="CasePick" className="casepick-page">
+        <div className="casepick-page-inner">
+            <header className="casepick-page-heading">
+                <span className="casepick-page-mark" aria-hidden="true"><IconChecklistOutlineRegular size={24} /></span>
+                <div>
+                    <h1>CasePick</h1>
+                    <p className="casepick-page-intro">把会话中的犯错整理成评测案例。</p>
+                </div>
+            </header>
+            <form aria-label="CasePick 设置" className="casepick-settings-form" onSubmit={(event) => { event.preventDefault(); void save(); }}>
+                <section className="casepick-card" aria-labelledby="casepick-runtime-heading" aria-busy={!draft && !error || saving}>
+                    <header className="casepick-card-heading">
+                        <h2 id="casepick-runtime-heading">运行设置</h2>
+                        <p className="casepick-hint">由 DSH 保存，填写的项优先于 <code>/casepick config</code>，留空的项沿用它。</p>
+                    </header>
+                    <div className="casepick-field casepick-field-toggle">
+                        <div className="casepick-field-copy">
+                            <div className="casepick-field-heading">
+                                <span>调试模式</span>
+                                {"debug" in patch && <Tag tone="info">已修改</Tag>}
+                            </div>
+                            <p className="casepick-hint">查看每次请求、原始回复、解析及核对诊断；只在当次界面展示，不另存诊断文件。</p>
+                        </div>
+                        <div className="casepick-field-control">
+                            <span className="casepick-hint">{draft ? draft.debug ? "已开启" : "已关闭" : "读取中"}</span>
+                            <Switch label="调试模式" checked={draft?.debug ?? false} disabled={disabled} onChange={(debug) => set("debug", debug)} />
+                        </div>
+                    </div>
+                    <Field {...field("draftModel")} modified={"draftModel" in patch} label="起草模型"
+                        hint="current：当前会话的模型；off：不使用模型；或填写 provider/model。">
+                        <Input {...inputProps("draftModel")} className="casepick-input" placeholder="沿用 /casepick config" autoComplete="off" spellCheck={false} />
+                    </Field>
+                    <Field {...field("reasoning")} modified={"reasoning" in patch} label="思考等级" hint="模型不支持所选等级时自动降级。">
+                        <div className="casepick-select-wrap">
+                            <select id="casepick-reasoning" aria-describedby="casepick-reasoning-hint"
+                                aria-invalid={errors.reasoning !== undefined} className="casepick-select"
+                                value={draft?.reasoning ?? ""} disabled={disabled} onChange={(event) => set("reasoning", event.target.value)}>
+                                <option value="">沿用 /casepick config</option>
+                                {reasoningLevels.map((level) => <option key={level} value={level}>{level}</option>)}
+                            </select>
+                            <span className="casepick-select-icon" aria-hidden="true"><IconChevronDownOutlineRegular size={14} /></span>
+                        </div>
+                    </Field>
+                    <Field {...field("maxOutputTokens")} modified={"maxOutputTokens" in patch} label="单次输出上限（tokens）" hint={range("maxOutputTokens")}>
+                        <Input {...inputProps("maxOutputTokens")} className="casepick-input" inputMode="numeric" placeholder="沿用 /casepick config" />
+                    </Field>
+                    <Field {...field("timeoutSeconds")} modified={"timeoutSeconds" in patch} label="单次超时（秒）" hint={range("timeoutSeconds")}>
+                        <Input {...inputProps("timeoutSeconds")} className="casepick-input" inputMode="numeric" placeholder="沿用 /casepick config" />
+                    </Field>
+                </section>
+                <section aria-labelledby="casepick-wizard-heading" className="casepick-card casepick-wizard">
+                    <header className="casepick-card-heading">
+                        <h2 id="casepick-wizard-heading">配置向导</h2>
+                        <p className="casepick-hint">在会话中选择起草模型、思考等级及外发同意等默认配置，保存至 CasePick 本地配置文件。</p>
+                    </header>
+                    <Button variant="outline" className="casepick-wizard-button" disabled={!sessionId || dirty}
+                        onClick={() => { if (sessionId) openConfig(sessionId); }}>
+                        在当前会话中打开 /casepick config <IconChevronRightOutlineRegular size={14} />
+                    </Button>
+                    <small className="casepick-hint">{!sessionId
+                        ? "先在左侧栏选中一个会话。"
+                        : dirty ? "有未保存的修改，请先保存或还原。" : `将回到会话「${session?.title || sessionId}」并打开向导。`}</small>
+                </section>
+                {error && <Notice level="error">{error}</Notice>}
+                <footer className="casepick-savebar">
+                    <div role="status" aria-live="polite" className="casepick-status">
+                        {saving || !draft && !error ? <><StateDot state="ongoing" /><span>{saving ? "正在保存…" : "正在读取设置…"}</span></>
+                            : error ? <><StateDot state="error" /><span className="casepick-failed">{draft ? "保存失败，请重试。" : "读取设置失败。"}</span></>
+                            : invalid ? <><StateDot state="warning" /><span>请修正标出的设置项</span></>
+                            : dirty ? <><StateDot state="warning" /><span>{Object.keys(patch).length} 项未保存</span></>
+                            : <><span className={notice ? "casepick-success" : "casepick-muted"} aria-hidden="true"><IconCheckCircleFillRegular size={16} /></span>
+                                <span>{notice ?? "所有设置已保存"}</span></>}
+                    </div>
+                    <div className="casepick-actions">
+                        {!draft && error
+                            ? <Button variant="outline" className="casepick-action" onClick={() => { setError(undefined); setLoads((count) => count + 1); }}>重试</Button>
+                            : <>
+                                <Button variant="ghost" className="casepick-action" disabled={disabled || !dirty}
+                                    onClick={() => { if (saved) setDraft(toDraft(saved)); setNotice(undefined); }}>还原</Button>
+                                <Button type="submit" variant="primary" className="casepick-action" disabled={disabled || invalid || !dirty}>
+                                    {saving ? "正在保存…" : "保存"}
+                                </Button>
+                            </>}
+                    </div>
+                </footer>
+            </form>
+        </div>
     </section>;
 }
 
+function CasePickIcon({ size }: SidebarPanelIconOwnerProps): React.ReactElement {
+    return <IconChecklistOutlineRegular size={size} />;
+}
+
 export function apply(ctx: ClientContext): void {
+    ctx.effect(() => injectStyles(), "casepick: styles");
     const surfaces = new Map<string, SessionSurface>();
     const surfaceFor = (sessionId: string): SessionSurface => {
         let surface = surfaces.get(sessionId);
@@ -363,9 +554,20 @@ export function apply(ctx: ClientContext): void {
         order: 10,
         inject: (sessionId) => ({ surface: surfaceFor(sessionId) }),
     }, SessionOverlay));
-    ctx.slots.inject("settings.plugin.item", () => ctx.slots.register({
-        name: "settings.plugin.item",
-        key: "casepick",
-        inject: () => ({ rpc: ctx.connection.rpc, surfaceFor }),
-    }, SettingsCard));
+    // The wizard's modal lives in the conversation, so reveal it before starting.
+    const openConfig = (sessionId: string) => {
+        ctx.layout.selectPanel(null);
+        void surfaceFor(sessionId).open("config");
+    };
+    ctx.slots.inject("main", () => ctx.slots.register({
+        name: "main",
+        key: PANEL_ID,
+        inject: () => ({ rpc: ctx.connection.rpc, openConfig }),
+    }, SettingsPage));
+    ctx.slots.inject("sidebar.panellist", () => ctx.slots.register({
+        name: "sidebar.panellist",
+        id: PANEL_ID,
+        order: 100,
+        label: "CasePick",
+    }, CasePickIcon));
 }

@@ -31,6 +31,7 @@ pnpm dev:pi
 在项目目录构建后安装到 DSH 的 Web profile：
 
 ```sh
+pnpm install
 pnpm build:dsh
 # 新建 profile 时执行一次；已有 Web profile 可跳过并替换下面的 profile 名。
 dsh --profile casepick --from-default-profile web --dump-config
@@ -40,7 +41,13 @@ dsh --profile casepick
 
 在 DSH 中打开需要整理的会话，使用 `/casepick` 或 `/casepick config`。原生浏览器弹窗提供与 Pi/OMP 相同的审阅、编辑、确认保存和长程问题流程。会话列表来自 DSH `sessionQuery`；手动定位其他会话时使用原生 session ID 或 `dsh:<session-id>`，不输入 Pi JSONL 路径。
 
-验证基线：DSH CLI `0.1.5-rc.1`、SDK `0.1.5-rc.2`。当前 DSH 前端入口面向 Web，不提供 ACP/headless 交互界面。`pnpm pack` 会自动构建原生入口；Pi/OMP 仍使用原来的 `src/extension.ts`，无须构建 DSH。
+选择列表支持 ↑ / ↓、Home / End 移动焦点，Enter 选择；编辑框使用 Enter 提交、Shift+Enter 换行。长内容在弹窗内滚动，底部操作按钮保持可见。提示、警告和错误使用不同的图标与主题颜色。
+
+CasePick 在 DSH 左侧栏有独立的 **CasePick** 页（与“插件”“自动化任务”等全局页并列），用于修改 DSH 原生设置：调试模式、起草模型、思考等级、单次输出上限及超时。编辑后点击 **保存** 才写入；填写的项优先于 `/casepick config`，留空的项沿用它。页面上的 **在当前会话中打开 /casepick config** 会回到左侧栏选中的会话并打开配置向导。
+
+兼容基线：CasePick `0.1.1` 对应 DSH CLI 与 SDK `0.2.0-rc.2`，DSH peer 版本精确匹配。旧版 CasePick `0.1.0` 的 `0.1.5-rc.2` 声明不能直接用于该宿主；升级插件并重新构建、安装及重启，不要用 `allow-version` 绕过检查。更新已有安装时沿用原 profile，无须删除 profile 或本地案例数据；安装来源从 tarball 改为链接时，先停止 DSH，再移除原插件并重新安装链接，避免继续使用旧包。
+
+当前 DSH 前端入口面向 Web，不提供 ACP/headless 交互界面。`pnpm pack` 会自动构建原生入口；Pi/OMP 仍使用原来的 `src/extension.ts`，无须构建 DSH。
 
 ### 整理与保存
 
@@ -69,7 +76,7 @@ Pi/OMP 用 `/resume` 打开需要整理的会话；DSH 从侧栏打开会话。�
 
 Debug 默认关闭。OMP 中将 CasePick 装成插件后，在 **Settings → Plugins → casepick → debug** 切换开关；也可以在 `/casepick config` 中选择 **Debug 模式**。Plugins 中显式设置的值优先，包括 `false`；被覆盖时，`/casepick config` 会提示到 Plugins 修改。配置变更在下一次模型辅助调用时生效。
 
-DSH 中在 **Settings → Plugins → Plugin configuration → CasePick** 切换 **Debug mode**；该开关由 DSH 原生设置持久化，优先于 CasePick 本地配置。起草模型等普通配置仍可从 `/casepick config` 修改。DSH 不读取 OMP 的 Plugins 设置，也不会因缺少 OMP API 而出现设置读取警告。
+DSH `0.2` 中在左侧栏 **CasePick** 页切换 **调试模式** 并保存；该开关由 DSH 原生设置持久化，优先于 CasePick 本地配置。被覆盖时，`/casepick config` 会提示到该页修改。DSH 不读取 OMP 的 Plugins 设置，也不会因缺少 OMP API 而出现设置读取警告。
 
 开启后，“用模型找证据”“用模型提议切片”和“用模型起草要求”会在每个请求结束后打开 Debug 菜单，可查看：
 
@@ -77,15 +84,15 @@ DSH 中在 **Settings → Plugins → Plugin configuration → CasePick** 切换
 - 完整原始回复、JSON 解析结果、核对通过数量和每条拒绝原因。
 - 模型、实际思考等级、输出上限、超时、停止原因和 token 用量。
 
-空候选会明确标为“模型返回空候选列表”；解析失败或调用失败也能查看诊断。空列表不代表会话没有问题，当前模型回复协议不要求提供空结果原因。选择“继续”处理下一段请求或进入正常审阅。
+空候选会明确标为“模型返回空候选列表”；解析失败或调用失败也能查看诊断。空列表不代表会话没有问题，当前模型回复协议不要求提供空结果原因。输出因 token 上限停止（`length`）时标为未完成，即使回复恰好是合法 JSON，也不将本轮积累的提议送入正常审阅；原始回复仍可在 Debug 查看。正常完成时选择“继续”处理下一段请求或进入审阅。
 
 诊断只在本次调用的界面中展示，不写入案例或日志，不收集调用凭据。原始回复可能包含敏感内容；`usage.jsonl` 仍只保存模型与用量。关闭 Debug 后不会弹出调试菜单，也不会增加模型调用。
 
 ## 当前范围
 
 - 只读当前会话分支，按所选出错位置重建压缩后的上下文；不会使用后续纠正作为输入。
-- Pi/OMP 使用当前宿主的 `buildSessionContext` 重建出错回复父节点的上下文，保留 Pi 的上下文编辑和 OMP 的压缩、reset 语义。DSH 按截止点之前的原生日志前缀，用 `foldSurface` 和 `foldRequestHeader` 恢复历史消息、系统提示与工具定义。
-- OMP 记录的基础系统提示及 `developer` 指令合并到 `task.system`，标记为 `approximate` 并说明层级、时序及临时覆盖的局限；不会把它们降级为用户要求。没有录制系统提示时仍标记缺失。
+- Pi/OMP 使用当前宿主的 `buildSessionContext` 重建出错回复父节点的上下文，保留 Pi 的上下文编辑和 OMP 的压缩、reset 语义。DSH 在截止点之前的每个日志前缀上重放注册的消息投影，再用 `foldSurface` 和 `foldRequestHeader` 恢复历史消息、系统提示与工具定义；支持 session format 4 的原生 `tool` 消息。
+- OMP 记录的基础系统提示及 `developer` 指令合并到 `task.system`，标记为 `approximate` 并说明层级、时序及临时覆盖的局限；不会把它们降级为用户要求。DSH 的历史 `developer` 指令同样保留，并显式记录合并带来的层级、位置损失及工具声明的不可移植信息。没有录制系统提示时仍标记缺失。
 - 规则起草不调用模型、不外发内容；模型辅助调用前会展示脱敏后的请求并要求外发确认，不授予模型工具执行权限。
 - DSH 模型辅助直接调用原生 `llm.prepareCall().stream()`，由 DSH 适配器处理认证；不使用 curl 或子 Agent，不修改当前会话模型，也不向对话插入辅助请求。DSH 自身仍会记录 slash command 的 `command/run`、`command/done` 事件。
 - DSH 引用其他会话的元数据只有会话 ID 与捕获水位时，只用于导航，不伪造原始回复 ID。图片、附件等无法恢复为可移植文本的内容会明确记录省略。

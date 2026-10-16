@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { Agent } from "@deepseek-ai/dsh-agent";
 import type { WorkflowUI } from "../host.ts";
 import type { Dialog, Notice, ViewState } from "./protocol.ts";
 
@@ -31,6 +32,41 @@ export class DialogBridge {
         };
     }
 
+    startMaintenance(
+        agent: Pick<Agent, "ctx" | "runMaintenance">,
+        task: (ui: WorkflowUI, signal: AbortSignal) => Promise<void>,
+    ): ViewState {
+        const run = this.begin();
+        if (!run) return this.snapshot();
+        const cancel = (reason?: unknown) => {
+            if (this.runId === run.id && !this.done) this.cancel(run.id, reason);
+        };
+        let detach: (() => unknown) | undefined;
+        try {
+            detach = agent.ctx.effect(() => () => cancel());
+            const operation = agent.runMaintenance(async (maintenanceSignal) => {
+                const signal = AbortSignal.any([maintenanceSignal, run.signal]);
+                const abort = () => cancel(signal.reason);
+                signal.addEventListener("abort", abort, { once: true });
+                try {
+                    if (signal.aborted) abort();
+                    signal.throwIfAborted();
+                    await task(run.ui, signal);
+                } finally {
+                    signal.removeEventListener("abort", abort);
+                }
+            });
+            void operation.then(
+                () => this.finish(run.id),
+                (error: unknown) => this.finish(run.id, error),
+            ).finally(() => { detach?.(); });
+        } catch (error) {
+            this.finish(run.id, error);
+            detach?.();
+        }
+        return this.snapshot();
+    }
+
     begin(): { id: string; signal: AbortSignal; ui: WorkflowUI } | undefined {
         if (this.runId && !this.done) return undefined;
         const id = randomUUID();
@@ -45,12 +81,12 @@ export class DialogBridge {
             confirm: async (title, message) => (await this.ask(id, { kind: "confirm", title, message })) === true,
             editor: async (title, prefill) => await this.ask(id, { kind: "editor", title, prefill: prefill ?? "" }) as string | undefined,
             notify: (text, level = "info") => {
-                if (this.runId !== id || this.abort?.signal.aborted) return;
+                if (this.runId !== id || this.done || this.abort?.signal.aborted) return;
                 this.notices.push({ text, level });
                 this.changed();
             },
             setStatus: (key, text) => {
-                if (this.runId !== id || this.abort?.signal.aborted || this.status[key] === text) return;
+                if (this.runId !== id || this.done || this.abort?.signal.aborted || this.status[key] === text) return;
                 if (text === undefined) delete this.status[key];
                 else this.status[key] = text;
                 this.changed();
@@ -60,7 +96,7 @@ export class DialogBridge {
     }
 
     private ask(runId: string, dialog: Omit<Dialog, "id">): Promise<string | boolean | undefined> {
-        if (this.runId !== runId || this.abort?.signal.aborted) return Promise.reject(new DOMException("操作已取消", "AbortError"));
+        if (this.runId !== runId || this.done || this.abort?.signal.aborted) return Promise.reject(new DOMException("操作已取消", "AbortError"));
         if (this.pending) return Promise.reject(new Error("同一工作流不能同时打开两个对话框"));
         const { promise, resolve, reject } = Promise.withResolvers<string | boolean | undefined>();
         this.pending = { dialog: { ...dialog, id: randomUUID() }, resolve, reject };
@@ -84,7 +120,7 @@ export class DialogBridge {
     }
 
     finish(runId: string, error?: unknown): void {
-        if (this.runId !== runId) return;
+        if (this.runId !== runId || this.done) return;
         if (error !== undefined && !this.abort?.signal.aborted) this.notices.push({ text: error instanceof Error ? error.message : String(error), level: "error" });
         this.pending?.reject(new DOMException("工作流已结束", "AbortError"));
         this.pending = undefined;
@@ -93,12 +129,12 @@ export class DialogBridge {
         this.changed();
     }
 
-    cancel(runId: string): ViewState {
+    cancel(runId: string, reason: unknown = new DOMException("用户关闭 CasePick", "AbortError")): ViewState {
         if (this.runId !== runId) throw new Error("工作流已失效");
-        this.abort?.abort(new DOMException("用户关闭 CasePick", "AbortError"));
+        this.runId = undefined;
+        this.abort?.abort(reason);
         this.pending?.reject(this.abort?.signal.reason);
         this.pending = undefined;
-        this.runId = undefined;
         this.status = {};
         this.notices = [];
         this.done = true;

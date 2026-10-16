@@ -91,10 +91,12 @@ test("native current model follows pending selection, then last request, then ho
         pending: { provider: "native", model: "next" },
     };
     assert.equal(f.view.model?.id, "next");
-    f.selection.value.pending = null;
+    f.selection.value = { ...f.selection.value, pending: null };
     assert.equal(f.view.model?.id, "last");
-    f.selection.value.lastUsed = null;
+    f.selection.value = { ...f.selection.value, lastUsed: null };
     assert.equal(f.view.model?.id, "private/model");
+    f.selection.value = undefined;
+    assert.throws(() => f.view.model, /缺少 modelSelection 投影/);
 });
 
 test("native assembly returns visible JSON, aggregates disjoint input usage, and never changes conversation state", async (t) => {
@@ -117,7 +119,7 @@ test("native assembly returns visible JSON, aggregates disjoint input usage, and
     assert.equal(native.tools, undefined);
     assert.equal(native.purpose, undefined);
     assert.equal(native.messages.length, 1);
-    assert.equal(native.messages[0].source.kind, "plugin");
+    assert.equal(native.messages[0].source?.kind, "casepick");
     assert.equal(native.reasoningEffort, "low");
     assert.equal(native.maxTokens, 77);
     assert.equal(Object.isFrozen(native.messages[0]), true);
@@ -157,6 +159,9 @@ test("caller cancellation, timeout and receiving-command cancellation stop only 
     });
     f.provider.onWait = () => timeout.abort(new DOMException("deadline", "TimeoutError"));
     await assert.rejects(f.modelRegistry.streamSimple!(f.model, f.prompt, { timeoutMs: 37 }).result(), { name: "TimeoutError" });
+    const inflight = new AbortController();
+    f.provider.onWait = () => inflight.abort(new Error("in-flight caller cancelled"));
+    await assert.rejects(f.modelRegistry.streamSimple!(f.model, f.prompt, { signal: inflight.signal }).result(), /in-flight caller cancelled/);
     f.provider.onWait = undefined;
     const pending = f.modelRegistry.streamSimple!(f.model, f.prompt).result();
     f.controller.abort(new Error("command cancelled"));

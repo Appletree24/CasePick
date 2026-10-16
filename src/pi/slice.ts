@@ -44,7 +44,7 @@ export function applyProposals(doc: CaseDocument, context: CaseContext, proposal
 
 export function buildSlice(ctx: WorkflowContext, session: LoadedSession, cutoffEntry: string, version: string, issue?: Issue): SliceDraft {
     const context = contextAt(session.snapshot, cutoffEntry);
-    if (session.external && context.tools.source === "approximate") {
+    if (session.external && context.tools.source === "approximate" && !context.limitations.some((item) => item.field === "task.tools")) {
         context.limitations.push({ field: "task.tools", status: "approximate", note: "截止点不在当前会话；工具定义取自本次扫描时的配置，可能与原会话不同" });
     }
     const doc = draftCase(context, version);

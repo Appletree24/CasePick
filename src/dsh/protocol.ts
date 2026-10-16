@@ -1,4 +1,4 @@
-// DSH 已认证 Connection RPC 上的 CasePick 界面协议；不含模型凭据。
+// DSH 已认证、以本地 operator 身份调用的 Connection RPC；不绑定浏览器会话，不含模型凭据。
 import type { ReasoningLevel } from "../core/reasoning.ts";
 export const rpcPath = "/api";
 
@@ -26,13 +26,13 @@ export interface ViewState {
     done: boolean;
 }
 
-export interface NativeSettings {
+export type NativeSettings = {
     debug: boolean;
     draftModel: string;
     reasoning: ReasoningLevel | "";
-    maxOutputTokens: number | null;
-    timeoutSeconds: number | null;
-}
+    maxOutputTokens?: number | null;
+    timeoutSeconds?: number | null;
+};
 
 // endpoints:
 // start { sessionId, args?: string } -> ViewState
@@ -40,4 +40,5 @@ export interface NativeSettings {
 // answer { sessionId, runId, dialogId, value: string | boolean | null } -> ViewState
 // cancel { sessionId, runId } -> ViewState (abort; closes pending dialog)
 // settings {} -> NativeSettings
-// settings/update { debug: boolean } -> NativeSettings
+// settings/update Partial<NativeSettings> -> NativeSettings (unknown keys or invalid values reject the whole patch;
+//   null maxOutputTokens/timeoutSeconds and "" draftModel/reasoning fall back to /casepick config)
